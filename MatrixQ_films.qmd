@@ -1,0 +1,191 @@
+---
+title: "Contrucción Matriz Q"
+subtitle: "Peliculas"
+format: html
+editor: visual
+---
+
+```{r}
+#llibreries
+library(tidyverse)
+```
+
+```{r}
+ruta <- "C:\Users\Paula García Ferrer\Desktop\TFG_dades\TFG\Movie20DB\ml-20m"
+
+movies  <- read_csv(paste0(ruta, "movies.csv"))
+ratings <- read_csv(paste0(ruta, "ratings.csv"))
+
+```
+
+```{r}
+#extraer generos de las pelis
+todos_los_generos <- movies %>%
+  separate_rows(genres, sep = "\\|") %>%   # separar por |
+  distinct(genres) %>%
+  arrange(genres)
+
+print(todos_los_generos)
+```
+
+```{r}
+#veamos cuantas pelis tiene cada genero
+# Contar cuántas películas tiene cada género
+conteo_generos <- movies %>%
+  separate_rows(genres, sep = "\\|") %>%
+  filter(genres != "(no genres listed)") %>%
+  count(genres, sort = TRUE)   # sort=TRUE ordena de mayor a menor
+
+print(conteo_generos)
+```
+
+Como la matriz Q es binaria vamos a crear las columnas binarias
+
+```{r,eval=FALSE}
+for(g in todos_los_generos){
+  
+  movies[[g]] <- ifelse(
+    grepl(g, movies$genres),
+    1,
+    0
+  )
+}
+```
+
+Construir Q solo con las columnas que sean genero
+
+```{r, eval=FALSE}
+Q <- movies %>%
+  select(all_of(todos_los_generos))
+
+#para ver dimension
+dim(Q)
+```
+
+En el articulo no cogen todo el csv de peliculas, utilizan un filtrado porque GPDM es muy costoso, lo que hacen es: cogen las peliculas más valoradas, solo cogen los generos más frecuentes y quitan las peliculas que no contenian esas peliculas.
+
+Para hacerlo como en el articulo podemos mirar cuantas vaces aparece un genero y filtrar: (Articulo: 4 generos, 1680 pelis y 1457 anime)
+
+```{r}
+#los 4 géneros con más pelis
+top4_generos <- conteo_generos %>%
+  slice_max(n, n = 4) %>%# los 4 primeros
+  pull(genres)# extraer solo los nombres
+
+print(top4_generos)
+# si queremos a mano hacemos: top4_generos <- c("Drama", "Comedy", "Thriller", "Action")
+```
+
+```{r}
+#filtramos por las pelis más valoradas
+# Contar cuántas valoraciones tiene cada película
+valoraciones_por_pelicula <- ratings %>%
+  count(movieId, name = "n_ratings") %>%
+  arrange(desc(n_ratings))
+
+head(valoraciones_por_pelicula)
+top_peliculas <- valoraciones_por_pelicula %>%
+  slice_max(n_ratings, n = 1680) %>% #cogremos misma cantidad que en el artiuclo
+  pull(movieId)
+
+cat("Películas seleccionadas:", length(top_peliculas), "\n")
+```
+
+Vamos a replicar lla matriz Q del articulo, que consiste en crear una columna binaria por genero (obviando la anterior porque no era con el top4 de generos)
+
+```{r}
+# Filtrar pelis seleccionadas y quedarse solo con las que tienen al menos uno de los 4 géneros
+
+Q_matrix <- movies %>%
+  filter(movieId %in% top_peliculas) %>%     
+  separate_rows(genres, sep = "\\|") %>%# una fila por género
+  filter(genres %in% top4_generos) %>%# top4 de genero
+  mutate(valor = 1L) %>% # columna binaria = 1
+  pivot_wider(
+    id_cols     = c(movieId, title),# filas = películas
+    names_from  = genres,# columnas = géneros
+    values_from = valor,
+    values_fill = 0L # si no tiene ese género -> 0
+  ) %>%
+  # Mirar que todas las columnas de géneros existan, por si algún género no aparece en ninguna película, y si alguna tiene todo 0 se excluirá
+  {
+    for (g in top4_generos) {
+      if (!g %in% names(.)) .[[g]] <- 0L
+    }
+    .
+  } %>%
+  # Reordenar columnas: movieId y title, luego géneros en orden
+  select(movieId, title, all_of(top4_generos))
+
+print(Q_matrix)
+```
+
+Si alguna peli no tiene ninguno de los 4 generos vamos a quitarla:
+
+```{r}
+Q_matrix <- Q_matrix %>%
+  filter(rowSums(select(., all_of(top4_generos))) > 0)
+
+cat("Películas en la Q matrix final:", nrow(Q_matrix), "\n")
+```
+
+Veamos un poco como ha quedado la matriz Q
+
+```{r}
+Q_matrix %>%
+  select(all_of(top4_generos)) %>%
+  summarise(across(everything(), sum)) %>%
+  pivot_longer(everything(), names_to = "genero", values_to = "n_peliculas")
+
+# cuantos generos tiene cada peli
+Q_matrix %>%
+  mutate(n_generos = rowSums(select(., all_of(top4_generos)))) %>%
+  count(n_generos)
+# la idea es que nos digan las peliculas las pelis que tengan 1,2,3 o 4 de los generos que tenemos
+head(Q_matrix, 10)
+
+#Ver la parte numérica de la Q matrix (sin id y titol)
+Q_num <- Q_matrix %>%
+  select(all_of(top4_generos)) %>%
+  as.matrix()
+
+rownames(Q_num) <- Q_matrix$movieId
+head(Q_num)
+```
+
+Por si queremos guardar la matriz Q:
+
+```{r}
+write_csv(Q_matrix, "Q_matrix_movielens.csv")
+```
+
+Ahora filtramos los ratings, para que sea coherente con las mismas pelis
+
+```{r}
+#ID de películas que quedaron en la Q matrix
+peliculas_validas <- Q_matrix$movieId
+
+# Filtrar ratings
+ratings_filtrado <- ratings %>%
+  filter(movieId %in% peliculas_validas) %>%
+  #Redondear la escala, en vez de 0.5-5 -> 1-5
+  mutate(rating = round(rating))
+
+# Contar usuarios únicos que quedan
+n_usuarios <- n_distinct(ratings_filtrado$userId)
+cat("Usuarios con al menos una valoración en películas válidas:", n_usuarios, "\n")
+
+write_csv(ratings_filtrado, "ratings_filtrado.csv")
+```
+
+Nota: La idea queda como si yo tengo
+
+movideId = 329
+
+title = Titanic
+
+Generos = Drama, Comedy, Thriller, Romance
+
+Binario generos = 1, 0, 0, 1 = q_329 = (q_329,drama \| q_329,comdey \| q_329,thriller \| q_329,romance \|)
+
+Cuando el GPDM intente predecir la puntuacion que un usario dará a titanic, solo tendrá en cuenta los atributos latentes del usuario relativos a drama y romance, e ignora thriller y comedy porque esa pelicula no contiene esos greneros.
