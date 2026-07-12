@@ -1,0 +1,364 @@
+---
+title: "AnalisisExploratorio"
+subtitle: "Peliculas"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(skimr)       # resumen estadístico rápido
+library(ggcorrplot)
+library(mirt)        # IRT multidimensional (incluye GRM)
+library(ltm)         # IRT clásico (2PL, GRM)
+library(psych)       # análisis factorial y fiabilidad
+library(scales)      # formateo de ejes en ggplot
+
+# para dejar todos los graficos igual
+tema_tfg <- theme_minimal(base_size = 12) +
+  theme(
+    plot.title    = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "grey40"),
+    axis.title    = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+```{r}
+#cargar datos
+movies  <- read_csv(paste0("data/movies.csv"),
+                    show_col_types = FALSE)
+ratings <- read_csv(paste0("data/ratings.csv"),
+                    show_col_types = FALSE)
+ 
+cat("movies: ", nrow(movies),  "filas,", ncol(movies),  "columnas\n")
+cat("ratings:", nrow(ratings), "filas,", ncol(ratings), "columnas\n")
+
+
+#codigo de la Q matrix
+#  Separar la columna genres (separada por |)
+generos_long <- movies %>%
+  separate_rows(genres, sep = "\\|") %>%
+  filter(genres != "(no genres listed)")
+ 
+# Todos los géneros existentes y su frecuencia
+tabla_generos <- generos_long %>%
+  count(genres, sort = TRUE, name = "n_peliculas")
+ 
+print(tabla_generos)
+ 
+# 4 géneros más frecuentes
+TOP4 <- tabla_generos %>%
+  slice_max(n_peliculas, n = 4) %>%
+  pull(genres)
+ 
+cat("Géneros seleccionados:", paste(TOP4, collapse = ", "), "\n")
+ 
+#Películas más valoradas 1680 con más puntuaciones
+top_peliculas <- ratings %>%
+  count(movieId, name = "n_ratings") %>%
+  slice_max(n_ratings, n = 1680) %>%
+  pull(movieId)
+ 
+#Matriz Q
+Q_matrix <- movies %>%
+  filter(movieId %in% top_peliculas) %>%
+  separate_rows(genres, sep = "\\|") %>%
+  filter(genres %in% TOP4) %>%
+  mutate(valor = 1L) %>%
+  pivot_wider(
+    id_cols     = c(movieId, title),
+    names_from  = genres,
+    values_from = valor,
+    values_fill = 0L
+  ) %>%
+  { for (g in TOP4) if (!g %in% names(.)) .[[g]] <- 0L; . } %>%
+  select(movieId, title, all_of(TOP4)) %>%
+  filter(rowSums(select(., all_of(TOP4))) > 0)
+ 
+cat("Q matrix:", nrow(Q_matrix), "películas ×", length(TOP4), "géneros\n")
+ 
+# Filtrar ratings a películas válidas - redondear 0.5–5 a enteros 1–5
+ratings_ok <- ratings %>%
+  filter(movieId %in% Q_matrix$movieId) %>%
+  mutate(rating = as.integer(round(rating)))
+ 
+cat("Ratings filtrados:", nrow(ratings_ok), "\n")
+cat("Usuarios únicos: ", n_distinct(ratings_ok$userId), "\n")
+ 
+#Subconjunto de 1000 usuarios de tes
+set.seed(42)
+usuarios_test <- ratings_ok %>%
+  distinct(userId) %>%
+  slice_sample(n = 1000) %>%
+  pull(userId)
+ 
+ratings_test <- ratings_ok %>% filter(userId %in%  usuarios_test)
+ratings_train <- ratings_ok %>% filter(!userId %in% usuarios_test)
+ 
+cat("Train:", n_distinct(ratings_train$userId), "usuarios\n")
+cat("Test: ", n_distinct(ratings_test$userId),  "usuarios\n")
+```
+
+ANALISIS EXPLORATORIO
+
+```{r}
+#Resumen estadístico general
+skim(ratings_ok %>% select(rating))
+ 
+#Distribución de puntuaciones 
+p1 <- ggplot(ratings_ok, aes(x = factor(rating))) +
+  geom_bar(fill = "#4C72B0", color = "white", width = 0.7) +
+  geom_text(stat = "count",
+            aes(label = scales::comma(after_stat(count))),
+            vjust = -0.4, size = 3.2) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title    = "Distribución de puntuaciones",
+    subtitle = "Dataset MovieLens 20M — subconjunto 1 680 películas",
+    x = "Puntuación (1–5)",
+    y = "Número de valoraciones"
+  ) +
+  tema_tfg
+ 
+print(p1)
+ggsave("fig_distribucion_ratings.pdf", p1, width = 7, height = 4)
+ 
+# Estadísticos básicos
+cat("\nEstadísticos de la puntuación:\n")
+ratings_ok %>%
+  summarise(
+    Media    = mean(rating),
+    Mediana  = median(rating),
+    Sd       = sd(rating),
+    Min      = min(rating),
+    Max      = max(rating),
+    N        = n()
+  ) %>%
+  print()
+```
+
+```{r}
+# num de valoraciones por película
+val_por_pelicula <- ratings_ok %>%
+  count(movieId, name = "n_val") %>%
+  left_join(movies %>% select(movieId, title), by = "movieId")
+ 
+p2 <- ggplot(val_por_pelicula, aes(x = n_val)) +
+  geom_histogram(fill = "#55A868", color = "white", bins = 50) +
+  scale_x_log10(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title    = "Distribución del número de valoraciones por película",
+    subtitle = "Escala logarítmica en el eje X",
+    x = "Número de valoraciones (log10)",
+    y = "Número de películas"
+  ) +
+  tema_tfg
+ 
+print(p2)
+ggsave("fig_val_por_pelicula.pdf", p2, width = 7, height = 4)
+ 
+# Top 10 películas más valoradas
+cat("\nTop 10 películas más valoradas:\n")
+val_por_pelicula %>%
+  arrange(desc(n_val)) %>%
+  slice_head(n = 10) %>%
+  select(title, n_val) %>%
+  print()
+ 
+# num de valoraciones por usuario
+val_por_usuario <- ratings_ok %>%
+  count(userId, name = "n_val")
+ 
+p3 <- ggplot(val_por_usuario, aes(x = n_val)) +
+  geom_histogram(fill = "#C44E52", color = "white", bins = 50) +
+  scale_x_log10(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title    = "Distribución del número de valoraciones por usuario",
+    subtitle = "Escala logarítmica en el eje X — evidencia del long-tail",
+    x = "Número de valoraciones (log10)",
+    y = "Número de usuarios"
+  ) +
+  tema_tfg
+ 
+print(p3)
+ggsave("fig_val_por_usuario.pdf", p3, width = 7, height = 4)
+ 
+cat("\nResumen de valoraciones por usuario:\n")
+summary(val_por_usuario$n_val)
+```
+
+```{r}
+# puntuación media por género 
+media_por_genero <- generos_long %>%
+  filter(movieId %in% Q_matrix$movieId) %>%
+  left_join(ratings_ok %>%
+              group_by(movieId) %>%
+              summarise(media = mean(rating), .groups = "drop"),
+            by = "movieId") %>%
+  group_by(genres) %>%
+  summarise(
+    media_rating = mean(media, na.rm = TRUE),
+    n_peliculas  = n_distinct(movieId),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(media_rating))
+ 
+p4 <- ggplot(media_por_genero,
+             aes(x = reorder(genres, media_rating),
+                 y = media_rating,
+                 fill = media_rating)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = round(media_rating, 2)),
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_gradient(low = "#AED6F1", high = "#1A5276") +
+  scale_y_continuous(limits = c(0, 4.5)) +
+  labs(
+    title    = "Puntuación media por género",
+    subtitle = "Películas del subconjunto de 1 680 más valoradas",
+    x = NULL,
+    y = "Puntuación media (1–5)"
+  ) +
+  tema_tfg
+ 
+print(p4)
+ggsave("fig_media_por_genero.pdf", p4, width = 8, height = 6)
+```
+
+```{r}
+# distribución de géneros en la Q matrix 
+generos_Q <- Q_matrix %>%
+  select(all_of(TOP4)) %>%
+  summarise(across(everything(), sum)) %>%
+  pivot_longer(everything(),
+               names_to  = "genero",
+               values_to = "n_peliculas")
+ 
+p5 <- ggplot(generos_Q,
+             aes(x = reorder(genero, n_peliculas),
+                 y = n_peliculas,
+                 fill = genero)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = n_peliculas), hjust = -0.2, size = 4) +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, max(generos_Q$n_peliculas) * 1.15)) +
+  labs(
+    title    = "Número de películas por género (Q matrix)",
+    subtitle = paste("Top 4 géneros:", paste(TOP4, collapse = ", ")),
+    x = NULL,
+    y = "Número de películas"
+  ) +
+  tema_tfg
+ 
+print(p5)
+ggsave("fig_generos_Qmatrix.pdf", p5, width = 6, height = 4)
+```
+
+```{r}
+# num de géneros por película 
+n_generos_por_pelicula <- Q_matrix %>%
+  mutate(n_generos = rowSums(select(., all_of(TOP4)))) %>%
+  count(n_generos, name = "n_peliculas")
+ 
+p6 <- ggplot(n_generos_por_pelicula,
+             aes(x = factor(n_generos), y = n_peliculas)) +
+  geom_col(fill = "#8E44AD", color = "white") +
+  geom_text(aes(label = n_peliculas), vjust = -0.4, size = 4) +
+  labs(
+    title    = "Número de géneros (de los 4 seleccionados) por película",
+    x = "Número de géneros",
+    y = "Número de películas"
+  ) +
+  tema_tfg
+ 
+print(p6)
+ggsave("fig_ngeneros_pelicula.pdf", p6, width = 5, height = 4)
+```
+
+```{r}
+# fracción de la matriz usuario-película tiene valoraciones
+# ver cuanta info tenemos
+n_usuarios_total <- n_distinct(ratings_ok$userId)
+n_peliculas_total <- nrow(Q_matrix)
+n_ratings_total   <- nrow(ratings_ok)
+sparsity <- 1 - n_ratings_total / (n_usuarios_total * n_peliculas_total)
+ 
+cat(sprintf(
+  "\nSparsity de la matriz usuario-película: %.2f%%\n",
+  sparsity * 100
+))
+cat(sprintf(
+  "Solo %.4f%% de las celdas tienen valoración\n",
+  (1 - sparsity) * 100
+))
+```
+
+IRT
+
+Construimos una matriz usuario × película con las puntuaciones para las películas del subconjunto. Solo se usan usuarios con suficientes valoraciones para el análisis IRT.
+
+```{r}
+# Filtrar usuarios de entrenamiento con al menos 5 valoraciones
+# en películas de la Q matrix
+usuarios_irt <- ratings_train %>%
+  count(userId, name = "n") %>%
+  filter(n >= 5) %>%
+  pull(userId)
+ 
+cat("Usuarios con ≥5 valoraciones (train):", length(usuarios_irt), "\n")
+ 
+# Construir matriz usuario × película
+# Para IRT necesitamos una muestra manejable: 2000 usuarios x 50 películas (el GRM en mirt puede ser lento con matrices muy grandes)
+set.seed(123)
+usuarios_muestra <- sample(usuarios_irt,
+                           min(2000, length(usuarios_irt)))
+ 
+# Seleccionamos las 50 películas con más valoraciones entre estos usuarios
+peliculas_muestra <- ratings_train %>%
+  filter(userId %in% usuarios_muestra) %>%
+  count(movieId, name = "n") %>%
+  slice_max(n, n = 50) %>%
+  pull(movieId)
+ 
+# matriz respondientes × ítems
+mat_irt <- ratings_train %>%
+  filter(userId %in% usuarios_muestra,
+         movieId %in% peliculas_muestra) %>%
+  pivot_wider(
+    id_cols     = userId,
+    names_from  = movieId,
+    values_from = rating
+  ) %>%
+  column_to_rownames("userId") %>%
+  as.matrix()
+ 
+cat("Dimensiones de la matriz IRT:",
+    nrow(mat_irt), "usuarios ×", ncol(mat_irt), "películas\n")
+ 
+# Porcentaje de valores ausentes
+pct_na <- mean(is.na(mat_irt)) * 100
+cat(sprintf("Datos ausentes en la matriz: %.1f%%\n", pct_na))
+ 
+# Estadísticos descriptivos por ítem (pelí)
+cat("\nEstadísticos por ítem (media y % de respuesta):\n")
+item_stats <- data.frame(
+  movieId    = as.integer(colnames(mat_irt)),
+  media      = colMeans(mat_irt, na.rm = TRUE),
+  sd         = apply(mat_irt, 2, sd, na.rm = TRUE),
+  pct_resp   = colMeans(!is.na(mat_irt)) * 100
+) %>%
+  left_join(movies %>% select(movieId, title), by = "movieId") %>%
+  arrange(desc(pct_resp))
+ 
+print(head(item_stats, 10))
+```
+
+```{r}
+# El GRM es el modelo politómico equivalente al 2PL.
+# Parámetros: discriminación (a) y umbrales (b1, b2, b3, b4)
+# para cada película.
+
+```
