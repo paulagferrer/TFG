@@ -3,6 +3,7 @@ title: "Contrucción Matriz Q"
 subtitle: "Peliculas"
 format: html
 editor: visual
+embed-resources: true
 ---
 
 ```{r}
@@ -191,7 +192,196 @@ Cuando el GPDM intente predecir la puntuacion que un usario dará a titanic, sol
 
 ## El modelo GDPM
 
-determina qué atributos latentes intervienen en la valoración de cada película.
+## Latent Class Item Response Theory Model
+
+Let
+
+$$
+Y_n \in \{1,2,3,4,5\}, \qquad n=1,\ldots,N,
+$$
+
+denote the ordinal rating observed for the $n$-th observation, corresponding to movie $j(n)$.
+
+The objective is to model the observed ratings assuming that the population is composed of $H$ latent classes, each representing a different preference profile over the movie attributes.
+
+### Observed variables
+
+The model uses the following observed quantities:
+
+- $N$: number of observed ratings.
+- $J$: number of movies.
+- $H$: number of latent classes.
+- $Q=(q_{jk})$: movie-attribute matrix, where $q_{jk}$ is the value of attribute $k$ for movie $j$.
+- $\boldsymbol{\alpha}_h=(\alpha_{h1},\ldots,\alpha_{h4})$: known preference profile associated with latent class $h$.
+
+### Latent classes
+
+Each individual is assumed to belong to an unobserved latent class
+
+$$
+Z_n\in\{1,\ldots,H\},
+$$
+
+with
+
+$$
+P(Z_n=h)=\pi_h,
+$$
+
+where
+
+$$
+\boldsymbol{\pi}=(\pi_1,\ldots,\pi_H)
+$$
+
+satisfies
+
+$$
+\sum_{h=1}^{H}\pi_h=1.
+$$
+
+Therefore,
+
+$$
+Z_n\sim\mathrm{Categorical}(\boldsymbol{\pi}).
+$$
+
+### Linear predictor
+
+Conditional on belonging to latent class $h$, the latent utility associated with movie $j$ is
+
+$$
+\eta_{jh}
+=
+\beta_j
++
+\sum_{k=1}^{4}
+\lambda_k
+q_{jk}
+\alpha_{hk}.
+$$
+
+where
+
+- $\beta_j$ is the movie intercept, accounting for the overall tendency of movie $j$ to receive higher or lower ratings.
+- $\lambda_k>0$ is the discrimination parameter associated with attribute $k$.
+- $q_{jk}$ indicates the presence or intensity of attribute $k$ in movie $j$.
+- $\alpha_{hk}$ measures the preference of latent class $h$ for attribute $k$.
+
+Hence, the contribution of attribute $k$ to the latent utility is
+
+$$
+\lambda_k q_{jk}\alpha_{hk}.
+$$
+
+### Ordinal response model
+
+Conditional on class membership,
+
+$$
+Y_n\mid Z_n=h
+\sim
+\mathrm{Ordered\ Logistic}(\eta_{j(n)h},\mathbf c),
+$$
+
+where
+
+$$
+\mathbf c=(c_1,c_2,c_3,c_4),
+$$
+
+with the ordering constraint
+
+$$
+c_1<c_2<c_3<c_4.
+$$
+
+The cumulative probabilities are given by
+
+$$
+P(Y_n\le r\mid Z_n=h)
+=
+\operatorname{logit}^{-1}
+\left(c_r-\eta_{j(n)h}\right),
+\qquad
+r=1,\ldots,4.
+$$
+
+### Marginal likelihood
+
+Since the latent class is not observed, the probability of an observed rating is obtained by marginalizing over all latent classes,
+
+$$
+P(Y_n=y_n)
+=
+\sum_{h=1}^{H}
+\pi_h
+P(Y_n=y_n\mid Z_n=h).
+$$
+
+Consequently, the log-likelihood of the complete sample is
+
+$$
+\ell(\Theta)
+=
+\sum_{n=1}^{N}
+\log
+\left(
+\sum_{h=1}^{H}
+\pi_h
+P(Y_n=y_n\mid Z_n=h)
+\right),
+$$
+
+which is exactly the quantity evaluated in Stan through the `log_sum_exp()` function.
+
+### Prior distributions
+
+The model assumes the following prior distributions:
+
+$$
+\beta_j
+\sim
+\mathcal{N}(0,1),
+$$
+
+$$
+\lambda_k
+\sim
+\operatorname{LogNormal}(0,0.5),
+$$
+
+$$
+\boldsymbol{\pi}
+\sim
+\operatorname{Dirichlet}(1,\ldots,1).
+$$
+
+The threshold parameters satisfy
+
+$$
+c_1<c_2<c_3<c_4,
+$$
+
+which is enforced in Stan using the `ordered` parameter type.
+
+### Interpretation
+
+This model can be viewed as a **latent class extension of the Graded Response Model (GRM)** from Item Response Theory. Instead of assuming a continuous latent trait for each individual, the population is represented by a finite set of latent preference profiles. In this application, the four movie attributes are binary, implying that there are
+
+$$
+2^4 = 16
+$$
+
+possible combinations of preferences. Each latent class corresponds to one of these combinations, encoded in the rows of $\boldsymbol{\alpha}$.
+
+The model does not estimate these preference profiles; they are fixed and supplied as data. Instead, it estimates the mixing proportions
+
+$$
+\boldsymbol{\pi}=(\pi_1,\ldots,\pi_{16}),
+$$
+
+which quantify the proportion of the population belonging to each latent preference profile. The observed ratings are therefore modeled as a finite mixture of ordered logistic regression models, weighted by these class probabilities.
 
 ```{r}
 users <- sort(unique(ratings_filtrado$userId))
@@ -313,8 +503,6 @@ model {
 "
 ```
 
-### Un modelo más pequeño
-
 ```{r}
 
 set.seed(123)
@@ -327,9 +515,7 @@ usuarios_sample <- sample(
 ratings_sub <- ratings_filtrado %>%
   mutate( rating = pmax(1, round(rating))) %>% 
   filter(userId %in% usuarios_sample)
-```
 
-```{r}
 users <- sort(unique(ratings_sub$userId))
 movies <- sort(unique(ratings_sub$movieId))
 
@@ -349,38 +535,10 @@ length(movies)
 nrow(Q_sub)
 ```
 
-```{r}
-stan_data <- list(
-  N = nrow(ratings_stan),
-  J = nrow(Q_sub),
-  H = nrow(alpha_class),
-  
-  movie = ratings_stan$mid,
-  rating = ratings_stan$rating,
-  
-  Q = Q_sub,
-  
-  alpha_class = alpha_class
-)
-```
+### Cargamos el RDS del modelo ajustado con 100 usuarios
 
 ```{r}
-writeLines(stan_code, "gpdm.stan")
-rstan_options(auto_write = TRUE)
-
-
-fit <- stan(
-  model_code = stan_code,
-  data = stan_data,
-  chains = 2,
-  iter = 1000,
-  warmup = 500,
-  cores = 2
-)
-
-
-saveRDS(fit, "fit_gpdm.rds")
-
+fit <- readRDS("fit_gpdm.rds")
 ```
 
 ```{r}
