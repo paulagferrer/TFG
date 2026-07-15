@@ -1,8 +1,10 @@
 ---
-title: "AnalisisExploratorio"
+title: "Analisis Exploratorio"
 subtitle: "Peliculas"
 format: html
 editor: visual
+execute: 
+  warning: false
 ---
 
 ```{r}
@@ -22,9 +24,11 @@ tema_tfg <- theme_minimal(base_size = 12) +
     axis.title    = element_text(face = "bold"),
     legend.position = "bottom"
   )
-```
 
-```{r}
+#evitar problemas
+select <- dplyr::select
+filter <- dplyr::filter
+
 #cargar datos
 movies  <- read_csv(paste0("data/movies.csv"),
                     show_col_types = FALSE)
@@ -33,34 +37,64 @@ ratings <- read_csv(paste0("data/ratings.csv"),
  
 cat("movies: ", nrow(movies),  "filas,", ncol(movies),  "columnas\n")
 cat("ratings:", nrow(ratings), "filas,", ncol(ratings), "columnas\n")
+```
 
+```{r}
+# replicando DB1 del artículo
+# Train: 6978 | Val: 1000 | Test: 1000 | Películas: 1680 | Géneros: 4
 
-#codigo de la Q matrix
-#  Separar la columna genres (separada por |)
+# Separar géneros para uso posterior en EDA
 generos_long <- movies %>%
   separate_rows(genres, sep = "\\|") %>%
   filter(genres != "(no genres listed)")
- 
-# Todos los géneros existentes y su frecuencia
+
+# Tabla de géneros
 tabla_generos <- generos_long %>%
   count(genres, sort = TRUE, name = "n_peliculas")
- 
+
 print(tabla_generos)
- 
-# 4 géneros más frecuentes
+
+# Top 4 géneros más frecuentes
 TOP4 <- tabla_generos %>%
   slice_max(n_peliculas, n = 4) %>%
   pull(genres)
- 
+
 cat("Géneros seleccionados:", paste(TOP4, collapse = ", "), "\n")
- 
-#Películas más valoradas 1680 con más puntuaciones
+
+# Top 1680 películas con más valoraciones
 top_peliculas <- ratings %>%
   count(movieId, name = "n_ratings") %>%
   slice_max(n_ratings, n = 1680) %>%
   pull(movieId)
- 
-#Matriz Q
+
+# Filtrar ratings a esas 1680 películas y redondear escala
+ratings_1680 <- ratings %>%
+  filter(movieId %in% top_peliculas) %>%
+  mutate(rating = as.integer(round(rating)))
+
+# Seleccionar los 8978 usuarios con más valoraciones en esas películas
+# (6978 train + 1000 val + 1000 test, como en el artículo)
+usuarios_top <- ratings_1680 %>%
+  count(userId, name = "n_ratings") %>%
+  slice_max(n_ratings, n = 8978) %>%
+  pull(userId)
+
+# ratings_ok = solo esos 8978 usuarios x 1680 películas
+ratings_ok <- ratings_1680 %>%
+  filter(userId %in% usuarios_top)
+
+# División train / validación / test
+set.seed(42)
+usuarios_mezclados <- sample(usuarios_top)
+usuarios_train <- usuarios_mezclados[1:6978]
+usuarios_val   <- usuarios_mezclados[6979:7978]
+usuarios_test  <- usuarios_mezclados[7979:8978]
+
+ratings_train <- ratings_ok %>% filter(userId %in% usuarios_train)
+ratings_val   <- ratings_ok %>% filter(userId %in% usuarios_val)
+ratings_test  <- ratings_ok %>% filter(userId %in% usuarios_test)
+
+# Matriz Q
 Q_matrix <- movies %>%
   filter(movieId %in% top_peliculas) %>%
   separate_rows(genres, sep = "\\|") %>%
@@ -72,41 +106,64 @@ Q_matrix <- movies %>%
     values_from = valor,
     values_fill = 0L
   ) %>%
-  { for (g in TOP4) if (!g %in% names(.)) .[[g]] <- 0L; . } %>%
-  select(movieId, title, all_of(TOP4)) %>%
-  filter(rowSums(select(., all_of(TOP4))) > 0)
- 
-cat("Q matrix:", nrow(Q_matrix), "películas ×", length(TOP4), "géneros\n")
- 
-# Filtrar ratings a películas válidas - redondear 0.5–5 a enteros 1–5
-ratings_ok <- ratings %>%
-  filter(movieId %in% Q_matrix$movieId) %>%
-  mutate(rating = as.integer(round(rating)))
- 
-cat("Ratings filtrados:", nrow(ratings_ok), "\n")
-cat("Usuarios únicos: ", n_distinct(ratings_ok$userId), "\n")
- 
-#Subconjunto de 1000 usuarios de tes
-set.seed(42)
-usuarios_test <- ratings_ok %>%
-  distinct(userId) %>%
-  slice_sample(n = 1000) %>%
-  pull(userId)
- 
-ratings_test <- ratings_ok %>% filter(userId %in%  usuarios_test)
-ratings_train <- ratings_ok %>% filter(!userId %in% usuarios_test)
- 
-cat("Train:", n_distinct(ratings_train$userId), "usuarios\n")
-cat("Test: ", n_distinct(ratings_test$userId),  "usuarios\n")
+  dplyr::select(movieId, title, all_of(TOP4)) %>%
+  filter(rowSums(dplyr::select(., all_of(TOP4))) > 0)
+
+# Verificación vs artículo
+cat("\n=== VERIFICACIÓN VS ARTÍCULO ===\n")
+cat(sprintf("%-20s %10s %10s\n", "",          "Artículo", "Nuestro"))
+cat(sprintf("%-20s %10s %10s\n", "Train",     "6978",  length(usuarios_train)))
+cat(sprintf("%-20s %10s %10s\n", "Val",       "1000",  length(usuarios_val)))
+cat(sprintf("%-20s %10s %10s\n", "Test",      "1000",  length(usuarios_test)))
+cat(sprintf("%-20s %10s %10s\n", "Películas", "~1680", nrow(Q_matrix)))
+cat(sprintf("%-20s %10s %10s\n", "Géneros",   "4",     length(TOP4)))
+cat(sprintf("%-20s %10s %10s\n", "Ratings ok", "-",    nrow(ratings_ok)))
 ```
 
 ANALISIS EXPLORATORIO
 
 ```{r}
-#Resumen estadístico general
-skim(ratings_ok %>% select(rating))
- 
-#Distribución de puntuaciones 
+library(knitr)
+# Tabla resumen presentable
+resumen_rating <- ratings_ok %>%
+  summarise(
+    `Nº valoraciones` = scales::comma(n()),
+    `Nº usuarios`     = scales::comma(n_distinct(userId)),
+    `Nº películas`    = scales::comma(n_distinct(movieId)),
+    Media             = as.character(round(mean(rating), 3)),
+    Mediana           = as.character(median(rating)),
+    `Desv. típica`    = as.character(round(sd(rating), 3)),
+    Mínimo            = as.character(min(rating)),
+    Máximo            = as.character(max(rating)),
+    `Q1 (25%)`        = as.character(quantile(rating, 0.25)),
+    `Q3 (75%)`        = as.character(quantile(rating, 0.75))
+  ) %>%
+  pivot_longer(everything(),
+               names_to  = "Estadístico",
+               values_to = "Valor")
+
+kable(resumen_rating,
+      align   = c("l", "r"),
+      caption = "Resumen del dataset de valoraciones (subconjunto DB1)")
+
+# Tabla de frecuencias por puntuación
+frecuencias <- ratings_ok %>%
+  count(rating, name = "n") %>%
+  mutate(
+    Porcentaje = round(n / sum(n) * 100, 1),
+    Frecuencia = scales::comma(n)
+  ) %>%
+  dplyr::select(
+    Puntuación = rating,
+    Frecuencia,
+    `%` = Porcentaje
+  )
+
+kable(frecuencias,
+      align   = c("c", "r", "r"),
+      caption = "Distribución de frecuencias por puntuación")
+
+# Gráfico de barras
 p1 <- ggplot(ratings_ok, aes(x = factor(rating))) +
   geom_bar(fill = "#4C72B0", color = "white", width = 0.7) +
   geom_text(stat = "count",
@@ -120,22 +177,9 @@ p1 <- ggplot(ratings_ok, aes(x = factor(rating))) +
     y = "Número de valoraciones"
   ) +
   tema_tfg
- 
+
 print(p1)
-ggsave("fig_distribucion_ratings.pdf", p1, width = 7, height = 4)
- 
-# Estadísticos básicos
-cat("\nEstadísticos de la puntuación:\n")
-ratings_ok %>%
-  summarise(
-    Media    = mean(rating),
-    Mediana  = median(rating),
-    Sd       = sd(rating),
-    Min      = min(rating),
-    Max      = max(rating),
-    N        = n()
-  ) %>%
-  print()
+ggsave("fig_distribucion_ratings.png", p1, width = 7, height = 4)
 ```
 
 ```{r}
@@ -157,14 +201,14 @@ p2 <- ggplot(val_por_pelicula, aes(x = n_val)) +
   tema_tfg
  
 print(p2)
-ggsave("fig_val_por_pelicula.pdf", p2, width = 7, height = 4)
+ggsave("fig_val_por_pelicula.png", p2, width = 7, height = 4)
  
 # Top 10 películas más valoradas
 cat("\nTop 10 películas más valoradas:\n")
 val_por_pelicula %>%
   arrange(desc(n_val)) %>%
   slice_head(n = 10) %>%
-  select(title, n_val) %>%
+  dplyr::select(title, n_val) %>%   # <- añadir dplyr::
   print()
  
 # num de valoraciones por usuario
@@ -184,7 +228,7 @@ p3 <- ggplot(val_por_usuario, aes(x = n_val)) +
   tema_tfg
  
 print(p3)
-ggsave("fig_val_por_usuario.pdf", p3, width = 7, height = 4)
+ggsave("fig_val_por_usuario.png", p3, width = 7, height = 4)
  
 cat("\nResumen de valoraciones por usuario:\n")
 summary(val_por_usuario$n_val)
@@ -225,7 +269,7 @@ p4 <- ggplot(media_por_genero,
   tema_tfg
  
 print(p4)
-ggsave("fig_media_por_genero.pdf", p4, width = 8, height = 6)
+ggsave("fig_media_por_genero.png", p4, width = 8, height = 6)
 ```
 
 ```{r}
@@ -254,7 +298,7 @@ p5 <- ggplot(generos_Q,
   tema_tfg
  
 print(p5)
-ggsave("fig_generos_Qmatrix.pdf", p5, width = 6, height = 4)
+ggsave("fig_generos_Qmatrix.png", p5, width = 6, height = 4)
 ```
 
 ```{r}
@@ -275,7 +319,7 @@ p6 <- ggplot(n_generos_por_pelicula,
   tema_tfg
  
 print(p6)
-ggsave("fig_ngeneros_pelicula.pdf", p6, width = 5, height = 4)
+ggsave("fig_ngeneros_pelicula.png", p6, width = 5, height = 4)
 ```
 
 ```{r}
@@ -295,6 +339,10 @@ cat(sprintf(
   (1 - sparsity) * 100
 ))
 ```
+
+Sparsity: es la fracción de celdas vacías en la matriz usuario-película. El denominador es el número total de celdas posibles (todos los usuarios × todas las películas). El numerador es cuántas celdas tienen valoración. Si sparsity = 0.98 significa que el 98% de las celdas están vacías.
+
+--------------------------------------------
 
 IRT
 
@@ -359,6 +407,6 @@ print(head(item_stats, 10))
 ```{r}
 # El GRM es el modelo politómico equivalente al 2PL.
 # Parámetros: discriminación (a) y umbrales (b1, b2, b3, b4)
-# para cada película.
+# para cada película. (PENDIENTE)
 
 ```
