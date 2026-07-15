@@ -344,7 +344,7 @@ Sparsity: es la fracción de celdas vacías en la matriz usuario-película. El d
 
 --------------------------------------------
 
-IRT
+IRT (PENDIENTE)
 
 Construimos una matriz usuario × película con las puntuaciones para las películas del subconjunto. Solo se usan usuarios con suficientes valoraciones para el análisis IRT.
 
