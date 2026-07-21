@@ -406,6 +406,8 @@ print(head(item_stats, 10))
 ```
 
 ```{r}
+# SEGUIMOS CON EL ANALSISI EXPLORATORIO
+
 #mirar si sigue una normal con kolmogorov. Si p < 0.05 -> rechazamos normalidad
 # Con 13M de ratings KS es casi instantáneo pero SIEMPRE
 # rechaza normalidad (muestras grandes detectan cualquier
@@ -451,7 +453,7 @@ ggsave("fig_qqplot.png", p_qq, width = 6, height = 5)
 
 ###############
 
-# ── 3. DISTRIBUCIÓN EMPÍRICA VS NORMAL TEÓRICA ─────────────
+# DISTRIBUCIÓN EMPÍRICA VS NORMAL TEÓRICA 
 # Visualización complementaria al QQ plot
 
 p_densidad <- ggplot(qq_data, aes(x = rating)) +
@@ -482,10 +484,10 @@ ggsave("fig_densidad_vs_normal.png", p_densidad, width = 6, height = 4)
 # Pearson asume normalidad; Spearman solo asume orden.
 
 # Construimos una tabla con métricas por película:
-# - rating_medio: puntuación media recibida
-# - n_ratings: número de valoraciones
-# - n_generos: cuántos de los 4 géneros tiene
-# - genero Drama/Comedy/Thriller/Romance: indicador binario
+# rating_medio: puntuación media recibida
+#n_ratings: número de valoraciones
+# n_generos: cuántos de los 4 géneros tiene
+#genero Drama/Comedy/Thriller/Romance: indicador binario
 
 metricas_pelicula <- ratings_ok %>%
   group_by(movieId) %>%
@@ -516,8 +518,7 @@ cor_spearman <- cor(metricas_pelicula,
 cat("\n=== MATRIZ DE CORRELACIÓN SPEARMAN ===\n")
 print(round(cor_spearman, 3))
 
-# Test de significación para cada par
-# (usamos cor.test en los pares más relevantes)
+# Test de significación para cada par (usamos cor.test en los pares más relevantes)
 pares_interes <- list(
   c("rating_medio", "n_ratings"),
   c("rating_medio", "Drama"),
@@ -530,7 +531,7 @@ pares_interes <- list(
 
 cat("\n=== TESTS DE CORRELACIÓN SPEARMAN (pares de interés) ===\n")
 cat(sprintf("%-30s %8s %10s %s\n",
-            "Par", "rho", "p-valor", "Significativo"))
+            "Par", "rho", "p-valor", "Significativo")) # la ia me lo dejó bonito esto
 cat(strrep("-", 60), "\n")
 
 for (par in pares_interes) {
@@ -549,9 +550,9 @@ cat("Significación: *** p<0.001  ** p<0.01  * p<0.05  ns no significativo\n")
 ```
 
 ```{r}
-# ── 5. HEATMAP DE CORRELACIONES ─────────────────────────────
+# HEATMAP DE CORRELACIONES
 
-# Etiquetas más legibles para el heatmap
+#etiquetas para estar más presentable
 colnames(cor_spearman) <- c("Rating medio", "Nº ratings",
                              "SD rating", "Drama", "Comedy",
                              "Thriller", "Romance", "Nº géneros")
@@ -579,21 +580,17 @@ ggsave("fig_heatmap_correlaciones.png", p_heatmap,
        width = 8, height = 7)
 ```
 
-infuencia variables
-
 ```{r}
 # INFLUENCIA DE VARIABLES SOBRE EL RATING MEDIO
-# Boxplot: distribución de ratings por género
-# Pasamos a formato largo para poder hacer facetas por género
 
+# Boxplot: distribución de ratings por género
 ratings_con_generos <- ratings_ok %>%
   left_join(Q_matrix %>%
               dplyr::select(movieId, all_of(TOP4)),
             by = "movieId") %>%
   drop_na()
 
-# Para cada género: comparar ratings de películas que LO TIENEN
-# vs películas que NO lo tienen
+# Para cada género: comparar ratings de películas que LO TIENEN vs películas que NO lo tienen
 generos_long_rating <- ratings_con_generos %>%
   pivot_longer(cols      = all_of(TOP4),
                names_to  = "genero",
@@ -601,7 +598,8 @@ generos_long_rating <- ratings_con_generos %>%
   mutate(tiene_genero = factor(tiene_genero,
                                levels = c(0, 1),
                                labels = c("No", "Sí")))
-# ALGO HICE MAL
+
+# ALGO HICE MAL -- LA TABLA ME DA UNA COSA Y EL GRAFICO OTRA MIRAR !!!!!!!!!!!!!!!!!!!!!!!!!!!!1
 p_box <- ggplot(generos_long_rating,
                 aes(x = tiene_genero, y = rating,
                     fill = tiene_genero)) +
@@ -620,11 +618,10 @@ p_box <- ggplot(generos_long_rating,
   theme(legend.position = "none")
 
 print(p_box)
-ggsave("fig_boxplot_generos.png", p_box, width = 10, height = 4)
+ggsave("fig_boxplot_generos.png", p_box, width = 10, height = 4) ########################################
 
-# 6 Test de Mann-Whitney U (no paramétrico, equivalente a
-#     Wilcoxon para dos muestras independientes) para comparar
-#     si la diferencia de medias es significativa
+# Test de Mann-Whitney U (no paramétrico, equivalente a Wilcoxon para dos muestras independientes) para comparar 
+#si la diferencia de medias es significativa
 cat("\n=== TEST MANN-WHITNEY: rating ~ género ===\n")
 cat(sprintf("%-12s %8s %10s %8s %8s\n",
             "Género", "Media Sí", "Media No", "W", "p-valor"))
