@@ -5,6 +5,7 @@ format: html
 editor: visual
 execute: 
   warning: false
+  message: false
 ---
 
 ```{r}
@@ -342,7 +343,7 @@ cat(sprintf(
 
 Sparsity: es la fracción de celdas vacías en la matriz usuario-película. El denominador es el número total de celdas posibles (todos los usuarios × todas las películas). El numerador es cuántas celdas tienen valoración. Si sparsity = 0.98 significa que el 98% de las celdas están vacías.
 
---------------------------------------------
+------------------------------------------------------------------------
 
 IRT (PENDIENTE)
 
@@ -405,8 +406,291 @@ print(head(item_stats, 10))
 ```
 
 ```{r}
-# El GRM es el modelo politómico equivalente al 2PL.
-# Parámetros: discriminación (a) y umbrales (b1, b2, b3, b4)
-# para cada película. (PENDIENTE)
+#mirar si sigue una normal con kolmogorov. Si p < 0.05 -> rechazamos normalidad
+# Con 13M de ratings KS es casi instantáneo pero SIEMPRE
+# rechaza normalidad (muestras grandes detectan cualquier
+# desviación mínima). Usamos una muestra de 5000 para que
+# el test sea informativo.
 
+set.seed(42)
+muestra_ks <- sample(ratings_ok$rating, 5000)
+
+ks_resultado <- ks.test(
+  muestra_ks,
+  "pnorm",
+  mean = mean(muestra_ks),
+  sd   = sd(muestra_ks)
+)
+
+cat("=== TEST KOLMOGOROV-SMIRNOV ===\n")
+cat(sprintf("Estadístico D : %.4f\n", ks_resultado$statistic))
+cat(sprintf("p-valor       : %.2e\n", ks_resultado$p.value))
+cat(sprintf("Conclusión    : %s\n",
+    ifelse(ks_resultado$p.value < 0.05,
+           "Se rechaza normalidad (p < 0.05)",
+           "No se rechaza normalidad (p >= 0.05)")))
+
+# QQ PLOT-- Compara cuantiles empíricos con cuantiles teóricos normales.
+# Si los puntos siguen la línea diagonal -> distribución normal.
+
+qq_data <- data.frame(rating = muestra_ks)
+
+p_qq <- ggplot(qq_data, aes(sample = rating)) +
+  stat_qq(color = "#4C72B0", alpha = 0.4, size = 0.8) +
+  stat_qq_line(color = "red", linewidth = 1) +
+  labs(
+    title    = "QQ Plot — Puntuaciones de películas",
+    subtitle = "Muestra de 5 000 valoraciones | Línea roja: distribución normal teórica",
+    x = "Cuantiles teóricos (Normal)",
+    y = "Cuantiles empíricos (Ratings)"
+  ) +
+  tema_tfg
+
+print(p_qq)
+ggsave("fig_qqplot.png", p_qq, width = 6, height = 5)
+
+###############
+
+# ── 3. DISTRIBUCIÓN EMPÍRICA VS NORMAL TEÓRICA ─────────────
+# Visualización complementaria al QQ plot
+
+p_densidad <- ggplot(qq_data, aes(x = rating)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 fill = "#4C72B0", color = "white",
+                 bins = 5, alpha = 0.7) +
+  stat_function(
+    fun  = dnorm,
+    args = list(mean = mean(muestra_ks), sd = sd(muestra_ks)),
+    color = "red", linewidth = 1.2, linetype = "dashed"
+  ) +
+  labs(
+    title    = "Distribución empírica vs. Normal teórica",
+    subtitle = "Línea roja discontinua: curva normal con misma media y sd",
+    x = "Puntuación (1–5)",
+    y = "Densidad"
+  ) +
+  tema_tfg
+
+print(p_densidad)
+ggsave("fig_densidad_vs_normal.png", p_densidad, width = 6, height = 4)
+```
+
+```{r}
+# CORRELACIONES
+# Como el KS rechaza normalidad (escala ordinal 1-5),
+# usamos SPEARMAN en lugar de Pearson.
+# Pearson asume normalidad; Spearman solo asume orden.
+
+# Construimos una tabla con métricas por película:
+# - rating_medio: puntuación media recibida
+# - n_ratings: número de valoraciones
+# - n_generos: cuántos de los 4 géneros tiene
+# - genero Drama/Comedy/Thriller/Romance: indicador binario
+
+metricas_pelicula <- ratings_ok %>%
+  group_by(movieId) %>%
+  summarise(
+    rating_medio = mean(rating),
+    n_ratings    = n(),
+    sd_rating    = sd(rating),
+    .groups = "drop"
+  ) %>%
+  left_join(Q_matrix, by = "movieId") %>%
+  mutate(
+    n_generos = Drama + Comedy + Thriller + Romance
+  ) %>%
+  dplyr::select(rating_medio, n_ratings, sd_rating,
+                Drama, Comedy, Thriller, Romance, n_generos)
+
+# Eliminar filas con NA (películas sin ratings en este subconjunto)
+metricas_pelicula <- metricas_pelicula %>% drop_na()
+
+cat("Películas con métricas completas:", nrow(metricas_pelicula), "\n")
+
+# Matriz de correlación de Spearman
+cor_spearman <- cor(metricas_pelicula,
+                    method = "spearman",
+                    use    = "complete.obs")
+
+# Mostrar la matriz redondeada
+cat("\n=== MATRIZ DE CORRELACIÓN SPEARMAN ===\n")
+print(round(cor_spearman, 3))
+
+# Test de significación para cada par
+# (usamos cor.test en los pares más relevantes)
+pares_interes <- list(
+  c("rating_medio", "n_ratings"),
+  c("rating_medio", "Drama"),
+  c("rating_medio", "Comedy"),
+  c("rating_medio", "Thriller"),
+  c("rating_medio", "Romance"),
+  c("rating_medio", "n_generos"),
+  c("n_ratings",    "n_generos")
+)
+
+cat("\n=== TESTS DE CORRELACIÓN SPEARMAN (pares de interés) ===\n")
+cat(sprintf("%-30s %8s %10s %s\n",
+            "Par", "rho", "p-valor", "Significativo"))
+cat(strrep("-", 60), "\n")
+
+for (par in pares_interes) {
+  test <- cor.test(metricas_pelicula[[par[1]]],
+                   metricas_pelicula[[par[2]]],
+                   method = "spearman",
+                   exact  = FALSE)
+  sig <- ifelse(test$p.value < 0.001, "***",
+         ifelse(test$p.value < 0.01,  "**",
+         ifelse(test$p.value < 0.05,  "*", "ns")))
+  cat(sprintf("%-30s %8.3f %10.3e %s\n",
+              paste(par, collapse = " ~ "),
+              test$estimate, test$p.value, sig))
+}
+cat("Significación: *** p<0.001  ** p<0.01  * p<0.05  ns no significativo\n")
+```
+
+```{r}
+# ── 5. HEATMAP DE CORRELACIONES ─────────────────────────────
+
+# Etiquetas más legibles para el heatmap
+colnames(cor_spearman) <- c("Rating medio", "Nº ratings",
+                             "SD rating", "Drama", "Comedy",
+                             "Thriller", "Romance", "Nº géneros")
+rownames(cor_spearman) <- colnames(cor_spearman)
+
+p_heatmap <- ggcorrplot(
+  cor_spearman,
+  method   = "square",
+  type     = "lower",       # solo triángulo inferior
+  lab      = TRUE,          # mostrar valores numéricos
+  lab_size = 3.5,
+  colors   = c("#C0392B", "white", "#2471A3"),
+  outline.color = "white",
+  title    = "Heatmap de correlaciones Spearman",
+  ggtheme  = tema_tfg
+) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    plot.title  = element_text(face = "bold", hjust = 0.5)
+  )
+
+print(p_heatmap)
+ggsave("fig_heatmap_correlaciones.png", p_heatmap,
+       width = 8, height = 7)
+```
+
+infuencia variables
+
+```{r}
+# INFLUENCIA DE VARIABLES SOBRE EL RATING MEDIO
+# Boxplot: distribución de ratings por género
+# Pasamos a formato largo para poder hacer facetas por género
+
+ratings_con_generos <- ratings_ok %>%
+  left_join(Q_matrix %>%
+              dplyr::select(movieId, all_of(TOP4)),
+            by = "movieId") %>%
+  drop_na()
+
+# Para cada género: comparar ratings de películas que LO TIENEN
+# vs películas que NO lo tienen
+generos_long_rating <- ratings_con_generos %>%
+  pivot_longer(cols      = all_of(TOP4),
+               names_to  = "genero",
+               values_to = "tiene_genero") %>%
+  mutate(tiene_genero = factor(tiene_genero,
+                               levels = c(0, 1),
+                               labels = c("No", "Sí")))
+# ALGO HICE MAL
+p_box <- ggplot(generos_long_rating,
+                aes(x = tiene_genero, y = rating,
+                    fill = tiene_genero)) +
+  geom_boxplot(outlier.alpha = 0.1, outlier.size = 0.5) +
+  facet_wrap(~ genero, nrow = 1) +
+  scale_fill_manual(values = c("No" = "#AED6F1",
+                                "Sí" = "#1A5276")) +
+  labs(
+    title    = "Distribución de ratings según pertenencia al género",
+    subtitle = "¿Tiene o no el género? — comparación por género",
+    x        = "¿La película pertenece al género?",
+    y        = "Puntuación",
+    fill     = NULL
+  ) +
+  tema_tfg +
+  theme(legend.position = "none")
+
+print(p_box)
+ggsave("fig_boxplot_generos.png", p_box, width = 10, height = 4)
+
+# 6 Test de Mann-Whitney U (no paramétrico, equivalente a
+#     Wilcoxon para dos muestras independientes) para comparar
+#     si la diferencia de medias es significativa
+cat("\n=== TEST MANN-WHITNEY: rating ~ género ===\n")
+cat(sprintf("%-12s %8s %10s %8s %8s\n",
+            "Género", "Media Sí", "Media No", "W", "p-valor"))
+cat(strrep("-", 50), "\n")
+
+for (g in TOP4) {
+  con    <- ratings_con_generos %>% filter(.data[[g]] == 1) %>% pull(rating)
+  sin    <- ratings_con_generos %>% filter(.data[[g]] == 0) %>% pull(rating)
+  # muestra para que no tarde demasiado
+  set.seed(1)
+  con_m  <- sample(con, min(5000, length(con)))
+  sin_m  <- sample(sin, min(5000, length(sin)))
+  wtest  <- wilcox.test(con_m, sin_m, exact = FALSE)
+  cat(sprintf("%-12s %8.3f %10.3f %8.0f %8.3e\n",
+              g,
+              mean(con), mean(sin),
+              wtest$statistic, wtest$p.value))
+}
+cat("p < 0.05 indica diferencia significativa entre grupos\n")
+
+# Rating medio por número de géneros que tiene la película
+media_por_ngeneros <- metricas_pelicula %>%
+  group_by(n_generos) %>%
+  summarise(
+    media    = mean(rating_medio),
+    sd       = sd(rating_medio),
+    n        = n(),
+    .groups  = "drop"
+  )
+
+p_ngeneros <- ggplot(media_por_ngeneros,
+                     aes(x = factor(n_generos), y = media)) +
+  geom_col(fill = "gold", color = "white", width = 0.6) +
+  geom_errorbar(aes(ymin = media - sd, ymax = media + sd),
+                width = 0.2, color = "grey30") +
+  geom_text(aes(label = paste0("n=", n)),
+            vjust = -0.5, size = 3.5) +
+  scale_y_continuous(limits = c(0, 5)) +
+  labs(
+    title    = "Rating medio según número de géneros de la película",
+    subtitle = "Barras de error: ± 1 desviación típica",
+    x        = "Número de géneros (de los 4 seleccionados)",
+    y        = "Puntuación media"
+  ) +
+  tema_tfg
+
+print(p_ngeneros)
+ggsave("fig_rating_por_ngeneros.png", p_ngeneros, width = 6, height = 4)
+
+# Popularidad vs rating medio (las más vistas son mejores?)
+p_pop_rating <- ggplot(metricas_pelicula,
+                       aes(x = log10(n_ratings), y = rating_medio)) +
+  geom_point(alpha = 0.4, color = "#E67E22", size = 1.5) +
+  geom_smooth(method = "lm", color = "#C0392B",
+              se = TRUE, linewidth = 1) +
+  labs(
+    title    = "Popularidad vs. Rating medio por película",
+    subtitle = sprintf("Correlación Spearman = %.3f",
+                       cor(log10(metricas_pelicula$n_ratings),
+                           metricas_pelicula$rating_medio,
+                           method = "spearman")),
+    x = "Log10(Número de valoraciones)",
+    y = "Rating medio"
+  ) +
+  tema_tfg
+
+print(p_pop_rating)
+ggsave("fig_popularidad_vs_rating.png", p_pop_rating, width = 7, height = 5)
 ```
