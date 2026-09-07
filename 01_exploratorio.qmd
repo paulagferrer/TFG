@@ -1,0 +1,308 @@
+---
+title: "Análisis Exploratorio — MovieLens"
+subtitle: "Distribución de ratings y relación con los géneros"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(knitr)
+library(scales)
+library(ggcorrplot)
+
+select <- dplyr::select
+filter <- dplyr::filter
+
+# Tema visual uniforme
+tema_tfg <- theme_minimal(base_size = 12) +
+  theme(
+    plot.title    = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "grey40"),
+    axis.title    = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+```{r cargar-datos}
+# Cargar datos preprocesados (ejecutar 00_preprocesado.qmd primero)
+movies       <- read_csv("data/movies.csv",        show_col_types = FALSE)
+ratings_ok   <- read_csv("output/ratings_ok.csv",  show_col_types = FALSE)
+Q_matrix     <- read_csv("output/Q_matrix.csv",    show_col_types = FALSE)
+
+TOP4 <- c("Drama", "Comedy", "Thriller", "Romance")
+
+cat("ratings_ok:", nrow(ratings_ok), "valoraciones\n")
+cat("Q_matrix:  ", nrow(Q_matrix), "películas\n")
+```
+
+> **Nota:** Este QMD carga los archivos generados por `00_preprocesado.qmd`.
+> Ejecuta ese primero si no tienes los archivos en `output/`.
+
+---
+
+## 1. Estadísticos descriptivos de las valoraciones
+
+```{r estadisticos}
+resumen <- ratings_ok %>%
+  summarise(
+    `Nº valoraciones` = scales::comma(n()),
+    `Nº usuarios`     = scales::comma(n_distinct(userId)),
+    `Nº películas`    = scales::comma(n_distinct(movieId)),
+    Media             = as.character(round(mean(rating), 3)),
+    Mediana           = as.character(median(rating)),
+    `Desv. típica`    = as.character(round(sd(rating), 3)),
+    Mínimo            = as.character(min(rating)),
+    Máximo            = as.character(max(rating)),
+    `Q1 (25%)`        = as.character(quantile(rating, 0.25)),
+    `Q3 (75%)`        = as.character(quantile(rating, 0.75))
+  ) %>%
+  pivot_longer(everything(), names_to = "Estadístico", values_to = "Valor")
+
+kable(resumen, align = c("l", "r"),
+      caption = "Resumen estadístico del dataset (subconjunto DB1)")
+```
+
+```{r frecuencias}
+frecuencias <- ratings_ok %>%
+  count(rating, name = "n") %>%
+  mutate(
+    Porcentaje = round(n / sum(n) * 100, 1),
+    Frecuencia = scales::comma(n)
+  ) %>%
+  dplyr::select(Puntuación = rating, Frecuencia, `%` = Porcentaje)
+
+kable(frecuencias, align = c("c", "r", "r"),
+      caption = "Distribución de frecuencias por puntuación")
+```
+
+## 2. Distribución de puntuaciones
+
+```{r dist-ratings, fig.width=7, fig.height=4}
+p1 <- ggplot(ratings_ok, aes(x = factor(rating))) +
+  geom_bar(fill = "#4C72B0", color = "white", width = 0.7) +
+  geom_text(stat = "count",
+            aes(label = scales::comma(after_stat(count))),
+            vjust = -0.4, size = 3.2) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title    = "Distribución de puntuaciones",
+    subtitle = "MovieLens 20M — subconjunto 1 680 películas, 8 978 usuarios",
+    x = "Puntuación (1–5)",
+    y = "Número de valoraciones"
+  ) + tema_tfg
+
+p1
+ggsave("output/fig_distribucion_ratings.png", p1, width = 7, height = 4, dpi = 150)
+```
+
+La puntuación más frecuente es **4**, seguida de 3 y 5. Las puntuaciones bajas (1 y 2) son minoritarias, lo que refleja que los usuarios tienden a valorar contenido que han elegido activamente ver.
+
+## 3. Valoraciones por película y por usuario
+
+```{r val-pelicula, fig.width=7, fig.height=4}
+val_por_pelicula <- ratings_ok %>%
+  count(movieId, name = "n_val") %>%
+  left_join(movies %>% dplyr::select(movieId, title), by = "movieId")
+
+p2 <- ggplot(val_por_pelicula, aes(x = n_val)) +
+  geom_histogram(fill = "#55A868", color = "white", bins = 40) +
+  scale_x_log10(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title    = "Distribución de valoraciones por película",
+    subtitle = "Escala logarítmica — distribución tipo long-tail",
+    x = "Número de valoraciones (escala log)",
+    y = "Número de películas"
+  ) + tema_tfg
+
+p2
+ggsave("output/fig_val_por_pelicula.png", p2, width = 7, height = 4, dpi = 150)
+```
+
+```{r top10-pelis}
+kable(
+  val_por_pelicula %>%
+    arrange(desc(n_val)) %>%
+    slice_head(n = 10) %>%
+    dplyr::select(Película = title, `Nº valoraciones` = n_val),
+  caption = "Top 10 películas con más valoraciones"
+)
+```
+
+## 4. Puntuación media por género
+
+```{r media-genero, fig.width=7, fig.height=4}
+media_genero <- movies %>%
+  filter(movieId %in% Q_matrix$movieId) %>%
+  separate_rows(genres, sep = "\\|") %>%
+  filter(genres %in% TOP4) %>%
+  left_join(
+    ratings_ok %>% group_by(movieId) %>%
+      summarise(media = mean(rating), .groups = "drop"),
+    by = "movieId"
+  ) %>%
+  group_by(genres) %>%
+  summarise(
+    media_rating = mean(media, na.rm = TRUE),
+    n_peliculas  = n_distinct(movieId),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(media_rating))
+
+p3 <- ggplot(media_genero,
+             aes(x = reorder(genres, media_rating), y = media_rating)) +
+  geom_col(fill = "#4C72B0", color = "white", width = 0.6) +
+  geom_text(aes(label = round(media_rating, 2)), hjust = -0.2, size = 4) +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, 4.5)) +
+  labs(
+    title    = "Puntuación media por género",
+    subtitle = "Películas del subconjunto de 1 680 más valoradas",
+    x = NULL, y = "Puntuación media (1–5)"
+  ) + tema_tfg
+
+p3
+ggsave("output/fig_media_por_genero.png", p3, width = 7, height = 4, dpi = 150)
+```
+
+## 5. Correlaciones Spearman: rating vs. variables de las películas
+
+Las valoraciones son una escala ordinal (1–5), por lo que usamos la
+correlación de **Spearman** en lugar de Pearson.
+
+```{r correlaciones}
+metricas_pelicula <- ratings_ok %>%
+  group_by(movieId) %>%
+  summarise(
+    rating_medio = mean(rating),
+    n_ratings    = n(),
+    sd_rating    = sd(rating),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    Q_matrix %>% dplyr::select(movieId, all_of(TOP4)),
+    by = "movieId"
+  ) %>%
+  mutate(n_generos = Drama + Comedy + Thriller + Romance) %>%
+  dplyr::select(rating_medio, n_ratings, sd_rating,
+                Drama, Comedy, Thriller, Romance, n_generos) %>%
+  drop_na()
+
+cor_sp <- cor(metricas_pelicula, method = "spearman", use = "complete.obs")
+
+# Tests de significación en los pares relevantes
+pares <- list(
+  c("rating_medio", "n_ratings"),
+  c("rating_medio", "Drama"),
+  c("rating_medio", "Comedy"),
+  c("rating_medio", "Thriller"),
+  c("rating_medio", "Romance"),
+  c("rating_medio", "n_generos")
+)
+
+resultados <- lapply(pares, function(par) {
+  t <- cor.test(metricas_pelicula[[par[1]]],
+                metricas_pelicula[[par[2]]],
+                method = "spearman", exact = FALSE)
+  data.frame(
+    Par       = paste(par, collapse = " ~ "),
+    rho       = round(t$estimate, 3),
+    `p-valor` = formatC(t$p.value, format = "e", digits = 2),
+    Sig       = ifelse(t$p.value < 0.001, "***",
+                ifelse(t$p.value < 0.01,  "**",
+                ifelse(t$p.value < 0.05,  "*", "ns")))
+  )
+}) %>% bind_rows()
+
+kable(resultados, caption = "Correlaciones Spearman entre rating y variables de la película",
+      col.names = c("Par", "ρ", "p-valor", "Signif."))
+```
+
+```{r heatmap, fig.width=8, fig.height=7}
+etiquetas <- c("Rating medio", "Nº ratings", "SD rating",
+               "Drama", "Comedy", "Thriller", "Romance", "Nº géneros")
+colnames(cor_sp) <- etiquetas
+rownames(cor_sp) <- etiquetas
+
+p_heat <- ggcorrplot(
+  cor_sp,
+  method = "square", type = "lower",
+  lab = TRUE, lab_size = 3.2,
+  colors = c("#C0392B", "white", "#2471A3"),
+  outline.color = "white",
+  title = "Mapa de calor — correlaciones Spearman",
+  ggtheme = tema_tfg
+) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, size = 9))
+
+p_heat
+ggsave("output/fig_heatmap_correlaciones.png", p_heat, width = 8, height = 7, dpi = 150)
+```
+
+## 6. Distribución de ratings por género (boxplot)
+
+```{r boxplot, fig.width=9, fig.height=4}
+# Unir ratings con los géneros de cada película
+ratings_generos <- ratings_ok %>%
+  left_join(Q_matrix %>% dplyr::select(movieId, all_of(TOP4)),
+            by = "movieId") %>%
+  drop_na() %>%
+  pivot_longer(cols = all_of(TOP4),
+               names_to  = "genero",
+               values_to = "tiene_genero") %>%
+  mutate(tiene_genero = factor(tiene_genero,
+                               levels = c(0, 1),
+                               labels = c("No", "Sí")))
+
+# Media real por grupo para anotarla
+medias <- ratings_generos %>%
+  group_by(genero, tiene_genero) %>%
+  summarise(media = round(mean(rating), 2), .groups = "drop")
+
+p_box <- ggplot(ratings_generos,
+                aes(x = tiene_genero, y = rating, fill = tiene_genero)) +
+  geom_boxplot(outlier.alpha = 0.05, outlier.size = 0.3) +
+  geom_text(data = medias, aes(label = media, y = 5.2),
+            size = 3, fontface = "bold") +
+  facet_wrap(~ genero, nrow = 1) +
+  scale_fill_manual(values = c("No" = "#AED6F1", "Sí" = "#1A5276")) +
+  labs(
+    title    = "Distribución de ratings según pertenencia al género",
+    subtitle = "Número encima de cada caja: media del grupo",
+    x = "¿Pertenece al género?",
+    y = "Puntuación",
+    fill = NULL
+  ) + tema_tfg + theme(legend.position = "none")
+
+p_box
+ggsave("output/fig_boxplot_generos.png", p_box, width = 9, height = 4, dpi = 150)
+```
+
+```{r mann-whitney}
+# Test de Mann-Whitney por género
+mw_res <- lapply(TOP4, function(g) {
+  con <- ratings_ok %>%
+    left_join(Q_matrix %>% dplyr::select(movieId, all_of(TOP4)), by = "movieId") %>%
+    filter(.data[[g]] == 1) %>% pull(rating)
+  sin <- ratings_ok %>%
+    left_join(Q_matrix %>% dplyr::select(movieId, all_of(TOP4)), by = "movieId") %>%
+    filter(.data[[g]] == 0) %>% pull(rating)
+  set.seed(1)
+  con_m <- sample(con, min(5000, length(con)))
+  sin_m <- sample(sin, min(5000, length(sin)))
+  w <- wilcox.test(con_m, sin_m, exact = FALSE)
+  data.frame(
+    Género     = g,
+    `Media Sí` = round(mean(con), 3),
+    `Media No` = round(mean(sin), 3),
+    `p-valor`  = formatC(w$p.value, format = "e", digits = 2),
+    Sig        = ifelse(w$p.value < 0.001, "***", ifelse(w$p.value < 0.05, "*", "ns"))
+  )
+}) %>% bind_rows()
+
+kable(mw_res, caption = "Test Mann-Whitney: ¿difiere el rating entre películas con/sin ese género?",
+      col.names = c("Género", "Media Sí", "Media No", "p-valor", "Signif."))
+```

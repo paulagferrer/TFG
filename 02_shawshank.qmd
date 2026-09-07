@@ -1,0 +1,366 @@
+---
+title: "Ejemplo GPDM — 1 Género, 1 Película"
+subtitle: "The Shawshank Redemption | Atributo: Drama"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(knitr)
+library(scales)
+
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+```{r cargar-datos}
+# Cargar datos preprocesados (ejecutar 00_preprocesado.qmd primero)
+ratings_train <- read_csv("output/ratings_train.csv", show_col_types = FALSE)
+ratings_test  <- read_csv("output/ratings_test.csv",  show_col_types = FALSE)
+Q_matrix      <- read_csv("output/Q_matrix.csv",      show_col_types = FALSE)
+
+TOP4      <- c("Drama", "Comedy", "Thriller", "Romance")
+MOVIE_ID  <- 318
+NOMBRE    <- "The Shawshank Redemption (1994)"
+
+cat("Datos cargados.\n")
+cat("Valoraciones train:", nrow(ratings_train), "\n")
+cat("Valoraciones test: ", nrow(ratings_test),  "\n")
+```
+
+---
+
+## Parte 1: Ejemplo a mano (datos ficticios)
+
+Esta sección ilustra el mecanismo del GPDM de forma completamente
+transparente, sin datos reales, para poder seguir todos los cálculos
+paso a paso.
+
+Con $\mathcal{A}_j = \{\text{Drama}\}$ y función identidad, la IRF del
+GPDM se simplifica a dos términos:
+
+$$P_c(\eta_h) = \delta_{jc}^{(\emptyset)} + \delta_{jc}^{(\text{Drama})} \cdot \eta_h$$
+
+### Datos de ejemplo
+
+```{r datos-ficticios}
+datos <- data.frame(
+  Usuario       = 1:10,
+  `Le gusta Drama (α)` = c(1, 1, 1, 1, 1, 0, 0, 0, 0, 0),
+  `Puntuación`  = c(5, 5, 4, 4, 3, 3, 2, 3, 1, 2),
+  check.names   = FALSE
+)
+
+kable(datos, caption = "Datos del ejemplo (10 usuarios ficticios)")
+```
+
+### Paso M del EM: probabilidades condicionales
+
+$$\hat{P}_c(\eta_h) = \frac{R_{jch}}{N_{jh}}$$
+
+```{r probs-ficticias}
+probs <- datos %>%
+  rename(le_drama = `Le gusta Drama (α)`, puntuacion = `Puntuación`) %>%
+  group_by(le_drama, puntuacion) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(le_drama) %>%
+  mutate(prob = n / sum(n)) %>%
+  ungroup() %>%
+  complete(le_drama, puntuacion = 1:5, fill = list(n = 0, prob = 0))
+
+tabla_probs <- probs %>%
+  dplyr::select(-n) %>%
+  pivot_wider(names_from = le_drama, values_from = prob,
+              names_prefix = "η=") %>%
+  rename(`Puntuación c` = puntuacion)
+
+kable(tabla_probs, digits = 2,
+      caption = "Probabilidades condicionales estimadas P̂_c(η_h)")
+```
+
+### Parámetros delta
+
+```{r deltas-ficticios}
+deltas <- probs %>%
+  pivot_wider(id_cols = puntuacion, names_from = le_drama,
+              values_from = prob, names_prefix = "g") %>%
+  mutate(
+    delta_base  = g0,
+    delta_drama = g1 - g0
+  )
+
+kable(
+  deltas %>% dplyr::select(
+    `Puntuación c` = puntuacion,
+    `P_c(η=0)` = g0, `P_c(η=1)` = g1,
+    `δ^(∅)` = delta_base, `δ^(Drama)` = delta_drama
+  ),
+  digits = 2,
+  caption = "Parámetros estructurales del GPDM"
+)
+
+cat("\nInterpretación:\n")
+for (c in 1:5) {
+  d <- deltas %>% filter(puntuacion == c) %>% pull(delta_drama)
+  cat(sprintf("  c=%d: δ^(Drama) = %+.2f → Drama %s la prob. de puntuar %d\n",
+              c, d, ifelse(d > 0, "AUMENTA", "REDUCE"), c))
+}
+```
+
+### Curvas ICC (probabilidades acumuladas)
+
+$$P^*_c(\eta_h) = P(Y \geq c \mid \eta_h) = \sum_{c'=c}^{5} \hat{P}_{c'}(\eta_h)$$
+
+```{r icc-ficticias, fig.width=7, fig.height=5}
+icc <- probs %>%
+  arrange(le_drama, puntuacion) %>%
+  group_by(le_drama) %>%
+  mutate(
+    P_acum = rev(cumsum(rev(prob))),
+    grupo  = ifelse(le_drama == 1, "η=1 (le gusta Drama)", "η=0 (no le gusta Drama)")
+  ) %>% ungroup()
+
+p_icc_ejemplo <- ggplot(icc,
+       aes(x = puntuacion, y = P_acum, color = grupo, group = grupo)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3.5) +
+  geom_text(aes(label = round(P_acum, 2)), vjust = -0.8, size = 3,
+            show.legend = FALSE) +
+  scale_x_continuous(breaks = 1:5) +
+  scale_y_continuous(limits = c(0, 1.05), labels = percent) +
+  scale_color_manual(values = c("η=1 (le gusta Drama)" = "#1A5276",
+                                "η=0 (no le gusta Drama)" = "#C0392B")) +
+  labs(
+    title    = "Curvas ICC del GPDM — Ejemplo a mano",
+    subtitle = "Probabilidades acumuladas P*(Y ≥ c | η)",
+    x = "Puntuación mínima c", y = "P*(Y ≥ c | η)", color = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5, color = "grey40"),
+        legend.position = "bottom")
+
+p_icc_ejemplo
+ggsave("output/fig_icc_ejemplo_mano.png", p_icc_ejemplo,
+       width = 7, height = 5, dpi = 150)
+```
+
+### Predicción para un usuario nuevo
+
+```{r prediccion-ficticia}
+predecir <- function(alpha_val, deltas_df) {
+  p <- deltas_df$delta_base + deltas_df$delta_drama * alpha_val
+  cat(sprintf("α_Drama = %d (%s)\n", alpha_val,
+              ifelse(alpha_val == 1, "le gusta", "no le gusta")))
+  cat(sprintf("  Max Probability : %d estrellas\n", which.max(p)))
+  cat(sprintf("  Weight Average  : %.2f estrellas\n", sum(1:5 * p)))
+}
+
+cat("--- Usuario con α=1 ---\n"); predecir(1, deltas)
+cat("--- Usuario con α=0 ---\n"); predecir(0, deltas)
+```
+
+---
+
+## Parte 2: Datos reales de MovieLens
+
+Ahora aplicamos la misma lógica a los datos reales de entrenamiento
+para **The Shawshank Redemption** (movieId = 318).
+
+### Verificación de la película en la Matriz Q
+
+```{r verificar-pelicula}
+Q_matrix %>% filter(movieId == MOVIE_ID) %>%
+  kable(caption = "Fila de Shawshank Redemption en la Matriz Q")
+```
+
+### Clasificar usuarios: ¿les gusta Drama?
+
+Un usuario tiene $\alpha_{i,\text{Drama}} = 1$ si su puntuación media
+en películas de Drama supera su media global.
+
+```{r clasificar-usuarios}
+peliculas_drama <- Q_matrix %>% filter(Drama == 1) %>% pull(movieId)
+
+# Usuarios que valoraron Shawshank en train
+ratings_shaw_train <- ratings_train %>% filter(movieId == MOVIE_ID)
+usuarios_shaw      <- ratings_shaw_train$userId
+
+# Calcular perfil de Drama para esos usuarios
+perfil <- ratings_train %>%
+  filter(userId %in% usuarios_shaw) %>%
+  group_by(userId) %>%
+  mutate(media_global = mean(rating)) %>%
+  ungroup() %>%
+  filter(movieId %in% peliculas_drama) %>%
+  group_by(userId, media_global) %>%
+  summarise(media_drama = mean(rating), .groups = "drop") %>%
+  mutate(alpha = as.integer(media_drama > media_global))
+
+# Usuarios sin valoraciones en Drama → α=0
+sin_drama <- setdiff(usuarios_shaw, perfil$userId)
+if (length(sin_drama) > 0) {
+  perfil <- bind_rows(perfil,
+    data.frame(userId = sin_drama, media_global = NA,
+               media_drama = NA, alpha = 0))
+}
+
+# Distribución del atributo
+perfil %>%
+  count(alpha) %>%
+  mutate(
+    Grupo = ifelse(alpha == 1, "η=1 (le gusta Drama)", "η=0 (no le gusta Drama)"),
+    `%`   = round(n / sum(n) * 100, 1)
+  ) %>%
+  kable(col.names = c("α", "N usuarios", "Grupo", "%"),
+        caption = "Distribución del atributo Drama en usuarios de train")
+```
+
+### Estimación: P̂_c(η_h) con datos reales
+
+```{r estimacion-real}
+# Unir rating de Shawshank con perfil de Drama
+datos_model <- ratings_shaw_train %>%
+  left_join(perfil %>% dplyr::select(userId, alpha), by = "userId") %>%
+  mutate(alpha = replace_na(alpha, 0))
+
+N_jh <- datos_model %>% count(alpha, name = "N_jh")
+
+R_jch <- datos_model %>%
+  count(alpha, rating, name = "R_jch") %>%
+  complete(alpha = 0:1, rating = 1:5, fill = list(R_jch = 0))
+
+probs_real <- R_jch %>%
+  left_join(N_jh, by = "alpha") %>%
+  mutate(P_c = R_jch / N_jh,
+         grupo = ifelse(alpha == 1, "η=1 (Drama)", "η=0 (no Drama)"))
+
+# Tabla de probabilidades
+probs_real %>%
+  dplyr::select(rating, grupo, P_c) %>%
+  pivot_wider(names_from = grupo, values_from = P_c) %>%
+  rename(`Puntuación c` = rating) %>%
+  kable(digits = 4,
+        caption = "Probabilidades condicionales reales P̂_c(η_h) — Shawshank Redemption")
+```
+
+### Parámetros delta con datos reales
+
+```{r deltas-real}
+deltas_real <- probs_real %>%
+  pivot_wider(id_cols = rating, names_from = alpha,
+              values_from = P_c, names_prefix = "g") %>%
+  mutate(delta_base = g0, delta_drama = g1 - g0)
+
+kable(
+  deltas_real %>% dplyr::select(
+    `Puntuación c` = rating,
+    `P_c(η=0)` = g0, `P_c(η=1)` = g1,
+    `δ^(∅)` = delta_base, `δ^(Drama)` = delta_drama
+  ),
+  digits = 4,
+  caption = "Parámetros δ estimados con datos reales"
+)
+
+cat("\nInterpretación:\n")
+for (c in 1:5) {
+  d <- deltas_real %>% filter(rating == c) %>% pull(delta_drama)
+  cat(sprintf("  c=%d: δ^(Drama) = %+.4f → Drama %s la prob. de puntuar %d\n",
+              c, d, ifelse(d > 0, "AUMENTA", "REDUCE"), c))
+}
+```
+
+### Curvas ICC con datos reales
+
+```{r icc-real, fig.width=8, fig.height=5}
+icc_real <- probs_real %>%
+  arrange(alpha, rating) %>%
+  group_by(alpha) %>%
+  mutate(
+    P_acum = rev(cumsum(rev(P_c))),
+    grupo  = ifelse(alpha == 1, "η=1 (le gusta Drama)", "η=0 (no le gusta Drama)")
+  ) %>% ungroup()
+
+p_icc_real <- ggplot(icc_real,
+       aes(x = rating, y = P_acum, color = grupo, group = grupo)) +
+  geom_line(linewidth = 1.3) +
+  geom_point(size = 4) +
+  geom_text(aes(label = round(P_acum, 2)), vjust = -0.8, size = 3,
+            show.legend = FALSE) +
+  scale_x_continuous(breaks = 1:5) +
+  scale_y_continuous(limits = c(0, 1.1), labels = percent) +
+  scale_color_manual(values = c("η=1 (le gusta Drama)" = "#1A5276",
+                                "η=0 (no le gusta Drama)" = "#C0392B")) +
+  labs(
+    title    = "Curvas ICC del GPDM — Datos reales MovieLens",
+    subtitle = paste(NOMBRE, "| Atributo: Drama"),
+    x = "Puntuación mínima c",
+    y = "P*(Y ≥ c | η)",
+    color = NULL,
+    caption = "Curva azul más alta → gustar del Drama aumenta la probabilidad de puntuar alto"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5, color = "grey40"),
+        legend.position = "bottom")
+
+p_icc_real
+ggsave("output/fig_icc_shawshank_real.png", p_icc_real,
+       width = 8, height = 5, dpi = 150)
+```
+
+### Predicción y métricas en el conjunto de test
+
+```{r prediccion-test}
+# Clasificar usuarios de test con el mismo criterio
+ratings_shaw_test <- ratings_test %>% filter(movieId == MOVIE_ID)
+
+perfil_test <- ratings_test %>%
+  filter(userId %in% ratings_shaw_test$userId) %>%
+  group_by(userId) %>%
+  mutate(media_global = mean(rating)) %>%
+  ungroup() %>%
+  filter(movieId %in% peliculas_drama) %>%
+  group_by(userId, media_global) %>%
+  summarise(media_drama = mean(rating), .groups = "drop") %>%
+  mutate(alpha = as.integer(media_drama > media_global))
+
+# Unir con ratings reales de test
+pred_test <- ratings_shaw_test %>%
+  left_join(perfil_test %>% dplyr::select(userId, alpha), by = "userId") %>%
+  mutate(alpha = replace_na(alpha, 0)) %>%
+  rowwise() %>%
+  mutate(
+    probs_v = list(
+      if (alpha == 1) deltas_real$g1 else deltas_real$g0
+    ),
+    pred_MP = which.max(unlist(probs_v)),
+    pred_WA = sum(1:5 * unlist(probs_v))
+  ) %>%
+  ungroup()
+
+metricas <- pred_test %>%
+  summarise(
+    N        = n(),
+    MAE_MP   = round(mean(abs(rating - pred_MP)), 4),
+    RMSE_MP  = round(sqrt(mean((rating - pred_MP)^2)), 4),
+    MAE_WA   = round(mean(abs(rating - pred_WA)), 4),
+    RMSE_WA  = round(sqrt(mean((rating - pred_WA)^2)), 4)
+  )
+
+kable(
+  data.frame(
+    Método = c("Max Probability", "Weight Average"),
+    MAE    = c(metricas$MAE_MP,  metricas$MAE_WA),
+    RMSE   = c(metricas$RMSE_MP, metricas$RMSE_WA)
+  ),
+  caption = paste("Métricas de evaluación en test —", NOMBRE, "(1 género)")
+)
+
+cat(sprintf("\nNota: el artículo reporta MAE=0.662 con GPDM completo (4 géneros, 6978 usuarios)\n"))
+cat(sprintf("      Este modelo simplificado usa 1 género y %.0f usuarios de test\n",
+            metricas$N))
+```

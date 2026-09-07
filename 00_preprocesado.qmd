@@ -1,0 +1,171 @@
+---
+title: "Preprocesado — MovieLens"
+subtitle: "Construcción de la Matriz Q y partición train/val/test"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+```{r librerias}
+library(tidyverse)
+library(knitr)
+
+# Evitar conflictos de nombres entre paquetes
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+## 1. Carga de datos
+
+```{r carga}
+movies  <- read_csv("data/movies.csv", show_col_types = FALSE)
+ratings <- read_csv("data/ratings.csv", show_col_types = FALSE)
+
+cat("movies: ", nrow(movies),  "filas,", ncol(movies),  "columnas\n")
+cat("ratings:", nrow(ratings), "filas,", ncol(ratings), "columnas\n")
+```
+
+## 2. Exploración de géneros
+
+```{r generos}
+# Separar géneros (vienen en una sola celda separados por |)
+generos_long <- movies %>%
+  separate_rows(genres, sep = "\\|") %>%
+  filter(genres != "(no genres listed)")
+
+# Conteo por género, ordenado de mayor a menor
+tabla_generos <- generos_long %>%
+  count(genres, sort = TRUE, name = "n_peliculas")
+
+kable(tabla_generos, caption = "Número de películas por género")
+```
+
+Los 4 géneros más frecuentes, que replicamos del artículo de referencia:
+
+```{r top4}
+TOP4 <- tabla_generos %>%
+  slice_max(n_peliculas, n = 4) %>%
+  pull(genres)
+
+cat("Géneros seleccionados:", paste(TOP4, collapse = ", "), "\n")
+```
+
+## 3. Selección de películas
+
+```{r top-peliculas}
+# Las 1680 películas con más valoraciones (igual que en el artículo)
+top_peliculas <- ratings %>%
+  count(movieId, name = "n_ratings") %>%
+  slice_max(n_ratings, n = 1680) %>%
+  pull(movieId)
+
+cat("Películas seleccionadas:", length(top_peliculas), "\n")
+```
+
+## 4. Construcción de la Matriz Q
+
+```{r q-matrix}
+Q_matrix <- movies %>%
+  filter(movieId %in% top_peliculas) %>%
+  separate_rows(genres, sep = "\\|") %>%
+  filter(genres %in% TOP4) %>%
+  mutate(valor = 1L) %>%
+  pivot_wider(
+    id_cols     = c(movieId, title),
+    names_from  = genres,
+    values_from = valor,
+    values_fill = 0L
+  ) %>%
+  dplyr::select(movieId, title, all_of(TOP4)) %>%
+  filter(rowSums(dplyr::select(., all_of(TOP4))) > 0)
+
+cat("Películas en la Matriz Q:", nrow(Q_matrix), "\n")
+cat("Géneros (columnas):", paste(TOP4, collapse = ", "), "\n")
+```
+
+Extracto de la Matriz Q resultante:
+
+```{r q-extracto}
+kable(
+  head(Q_matrix, 8),
+  caption = "Extracto de la Matriz Q (películas × géneros)"
+)
+```
+
+Resumen de cuántas películas tiene cada género:
+
+```{r q-resumen}
+Q_matrix %>%
+  dplyr::select(all_of(TOP4)) %>%
+  summarise(across(everything(), sum)) %>%
+  pivot_longer(everything(),
+               names_to  = "Género",
+               values_to = "N películas") %>%
+  kable(caption = "Películas por género en la Matriz Q")
+```
+
+## 5. Filtrado de ratings y partición train/val/test
+
+Replicamos exactamente la estructura de DB1 del artículo: **6 978 train \| 1 000 val \| 1 000 test**, con las mismas 1 680 películas.
+
+```{r particion}
+# Solo ratings de películas que están en la Q matrix
+# Redondear escala 0.5-5 a enteros 1-5
+ratings_ok <- ratings %>%
+  filter(movieId %in% Q_matrix$movieId) %>%
+  mutate(rating = as.integer(round(rating)))
+
+# Los 8978 usuarios con más valoraciones (los más activos)
+usuarios_top <- ratings_ok %>%
+  count(userId, name = "n") %>%
+  slice_max(n, n = 8978) %>%
+  pull(userId)
+
+ratings_ok <- ratings_ok %>% filter(userId %in% usuarios_top)
+
+# División aleatoria reproducible
+set.seed(42)
+usuarios_mezclados <- sample(usuarios_top)
+
+usuarios_train <- usuarios_mezclados[1:6978]
+usuarios_val   <- usuarios_mezclados[6979:7978]
+usuarios_test  <- usuarios_mezclados[7979:8978]
+
+ratings_train <- ratings_ok %>% filter(userId %in% usuarios_train)
+ratings_val   <- ratings_ok %>% filter(userId %in% usuarios_val)
+ratings_test  <- ratings_ok %>% filter(userId %in% usuarios_test)
+```
+
+Verificación vs. el artículo:
+
+```{r verificacion}
+comparacion <- data.frame(
+  Partición   = c("Train", "Validación", "Test", "Películas", "Géneros"),
+  Artículo    = c("6 978", "1 000", "1 000", "~1 680", "4"),
+  Nuestro     = c(
+    as.character(length(usuarios_train)),
+    as.character(length(usuarios_val)),
+    as.character(length(usuarios_test)),
+    as.character(nrow(Q_matrix)),
+    as.character(length(TOP4))
+  )
+)
+
+kable(comparacion, caption = "Comparación con el artículo de referencia (DB1)")
+```
+
+## 6. Guardar objetos intermedios
+
+```{r guardar}
+write_csv(Q_matrix,     "output/Q_matrix.csv")
+write_csv(ratings_train, "output/ratings_train.csv")
+write_csv(ratings_val,   "output/ratings_val.csv")
+write_csv(ratings_test,  "output/ratings_test.csv")
+
+cat("Archivos guardados en output/\n")
+cat(sprintf("  Q_matrix:      %d filas\n", nrow(Q_matrix)))
+cat(sprintf("  ratings_train: %d filas\n", nrow(ratings_train)))
+cat(sprintf("  ratings_val:   %d filas\n", nrow(ratings_val)))
+cat(sprintf("  ratings_test:  %d filas\n", nrow(ratings_test)))
+```
