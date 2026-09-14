@@ -38,10 +38,7 @@ cat("ratings_ok:", nrow(ratings_ok), "valoraciones\n")
 cat("Q_matrix:  ", nrow(Q_matrix), "películas\n")
 ```
 
-> **Nota:** Este QMD carga los archivos generados por `00_preprocesado.qmd`.
-> Ejecuta ese primero si no tienes los archivos en `output/`.
-
----
+------------------------------------------------------------------------
 
 ## 1. Estadísticos descriptivos de las valoraciones
 
@@ -170,8 +167,7 @@ ggsave("output/fig_media_por_genero.png", p3, width = 7, height = 4, dpi = 150)
 
 ## 5. Correlaciones Spearman: rating vs. variables de las películas
 
-Las valoraciones son una escala ordinal (1–5), por lo que usamos la
-correlación de **Spearman** en lugar de Pearson.
+Las valoraciones son una escala ordinal (1–5), por lo que usamos la correlación de Spearman en lugar de Pearson.
 
 ```{r correlaciones}
 metricas_pelicula <- ratings_ok %>%
@@ -279,30 +275,4 @@ p_box <- ggplot(ratings_generos,
 
 p_box
 ggsave("output/fig_boxplot_generos.png", p_box, width = 9, height = 4, dpi = 150)
-```
-
-```{r mann-whitney}
-# Test de Mann-Whitney por género
-mw_res <- lapply(TOP4, function(g) {
-  con <- ratings_ok %>%
-    left_join(Q_matrix %>% dplyr::select(movieId, all_of(TOP4)), by = "movieId") %>%
-    filter(.data[[g]] == 1) %>% pull(rating)
-  sin <- ratings_ok %>%
-    left_join(Q_matrix %>% dplyr::select(movieId, all_of(TOP4)), by = "movieId") %>%
-    filter(.data[[g]] == 0) %>% pull(rating)
-  set.seed(1)
-  con_m <- sample(con, min(5000, length(con)))
-  sin_m <- sample(sin, min(5000, length(sin)))
-  w <- wilcox.test(con_m, sin_m, exact = FALSE)
-  data.frame(
-    Género     = g,
-    `Media Sí` = round(mean(con), 3),
-    `Media No` = round(mean(sin), 3),
-    `p-valor`  = formatC(w$p.value, format = "e", digits = 2),
-    Sig        = ifelse(w$p.value < 0.001, "***", ifelse(w$p.value < 0.05, "*", "ns"))
-  )
-}) %>% bind_rows()
-
-kable(mw_res, caption = "Test Mann-Whitney: ¿difiere el rating entre películas con/sin ese género?",
-      col.names = c("Género", "Media Sí", "Media No", "p-valor", "Signif."))
 ```

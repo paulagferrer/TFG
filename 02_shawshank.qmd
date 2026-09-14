@@ -31,16 +31,13 @@ cat("Valoraciones train:", nrow(ratings_train), "\n")
 cat("Valoraciones test: ", nrow(ratings_test),  "\n")
 ```
 
----
+------------------------------------------------------------------------
 
 ## Parte 1: Ejemplo a mano (datos ficticios)
 
-Esta sección ilustra el mecanismo del GPDM de forma completamente
-transparente, sin datos reales, para poder seguir todos los cálculos
-paso a paso.
+Esta sección ilustra el mecanismo del GPDM de forma completamente transparente, sin datos reales, para poder seguir todos los cálculos paso a paso.
 
-Con $\mathcal{A}_j = \{\text{Drama}\}$ y función identidad, la IRF del
-GPDM se simplifica a dos términos:
+Con $\mathcal{A}_j = \{\text{Drama}\}$ y función identidad, la IRF del GPDM se simplifica a dos términos:
 
 $$P_c(\eta_h) = \delta_{jc}^{(\emptyset)} + \delta_{jc}^{(\text{Drama})} \cdot \eta_h$$
 
@@ -163,12 +160,11 @@ cat("--- Usuario con α=1 ---\n"); predecir(1, deltas)
 cat("--- Usuario con α=0 ---\n"); predecir(0, deltas)
 ```
 
----
+------------------------------------------------------------------------
 
 ## Parte 2: Datos reales de MovieLens
 
-Ahora aplicamos la misma lógica a los datos reales de entrenamiento
-para **The Shawshank Redemption** (movieId = 318).
+Ahora aplicamos la misma lógica a los datos reales de entrenamiento para **The Shawshank Redemption** (movieId = 318).
 
 ### Verificación de la película en la Matriz Q
 
@@ -179,8 +175,7 @@ Q_matrix %>% filter(movieId == MOVIE_ID) %>%
 
 ### Clasificar usuarios: ¿les gusta Drama?
 
-Un usuario tiene $\alpha_{i,\text{Drama}} = 1$ si su puntuación media
-en películas de Drama supera su media global.
+Un usuario tiene $\alpha_{i,\text{Drama}} = 1$ si su puntuación media en películas de Drama supera su media global.
 
 ```{r clasificar-usuarios}
 peliculas_drama <- Q_matrix %>% filter(Drama == 1) %>% pull(movieId)
@@ -219,7 +214,7 @@ perfil %>%
         caption = "Distribución del atributo Drama en usuarios de train")
 ```
 
-### Estimación: P̂_c(η_h) con datos reales
+### Estimación: P̂\_c(η_h) con datos reales
 
 ```{r estimacion-real}
 # Unir rating de Shawshank con perfil de Drama

@@ -21,22 +21,19 @@ options(mc.cores = 2)
 ```
 
 ```{r cargar-datos}
-# Cargar datos preprocesados (ejecutar 00_preprocesado.qmd primero)
 ratings_train <- read_csv("output/ratings_train.csv", show_col_types = FALSE)
 ratings_test  <- read_csv("output/ratings_test.csv",  show_col_types = FALSE)
 Q_matrix      <- read_csv("output/Q_matrix.csv",      show_col_types = FALSE)
 
 TOP4 <- c("Drama", "Comedy", "Thriller", "Romance")
-
 cat("Datos cargados.\n")
 ```
 
----
+------------------------------------------------------------------------
 
 ## 1. Preparación de los datos para Stan
 
 ```{r datos-stan}
-# Muestra de 100 usuarios para ajuste del modelo
 set.seed(123)
 usuarios_sample <- sample(unique(ratings_train$userId), 100)
 
@@ -44,7 +41,6 @@ ratings_sub <- ratings_train %>%
   filter(userId %in% usuarios_sample) %>%
   mutate(rating = pmax(1, as.integer(round(rating))))
 
-# Índices consecutivos (Stan requiere 1, 2, 3...)
 users_idx  <- sort(unique(ratings_sub$userId))
 movies_idx <- sort(unique(ratings_sub$movieId))
 
@@ -54,14 +50,12 @@ ratings_stan <- ratings_sub %>%
     mid = match(movieId, movies_idx)
   )
 
-# Q matrix solo para las películas de la muestra
 Q_sub <- Q_matrix %>%
   filter(movieId %in% movies_idx) %>%
   arrange(match(movieId, movies_idx)) %>%
   dplyr::select(all_of(TOP4)) %>%
   as.matrix()
 
-# Las 16 clases latentes posibles (2^4 = 16 combinaciones de géneros)
 alpha_class <- expand.grid(
   Drama = c(0,1), Comedy = c(0,1),
   Thriller = c(0,1), Romance = c(0,1)
@@ -70,12 +64,12 @@ alpha_class <- expand.grid(
 H <- nrow(alpha_class)  # 16
 
 stan_data <- list(
-  N      = nrow(ratings_stan),
-  J      = nrow(Q_sub),
-  H      = H,
-  movie  = ratings_stan$mid,
-  rating = ratings_stan$rating,
-  Q      = Q_sub,
+  N           = nrow(ratings_stan),
+  J           = nrow(Q_sub),
+  H           = H,
+  movie       = ratings_stan$mid,
+  rating      = ratings_stan$rating,
+  Q           = Q_sub,
   alpha_class = alpha_class
 )
 
@@ -83,35 +77,16 @@ cat(sprintf("Datos Stan:\n  N=%d valoraciones\n  J=%d películas\n  H=%d clases\
             stan_data$N, stan_data$J, stan_data$H))
 ```
 
----
+------------------------------------------------------------------------
 
-## 2. Ajuste del modelo Stan
-
-El modelo se ajusta una sola vez y se guarda en `fit_gpdm.rds`.
-En ejecuciones posteriores se carga directamente el resultado guardado.
-
-```{r ajuste-stan, eval=FALSE}
-# SOLO EJECUTAR UNA VEZ (tarda ~10-15 min)
-# Después usar el bloque de carga de abajo
-fit <- stan(
-  file   = "gpdm.stan",
-  data   = stan_data,
-  chains = 2,
-  iter   = 1000,
-  warmup = 500,
-  cores  = 2
-)
-saveRDS(fit, "fit_gpdm.rds")
-cat("Modelo guardado en fit_gpdm.rds\n")
-```
+## 2. Carga del modelo Stan
 
 ```{r cargar-fit}
-# Cargar el modelo ya ajustado
 fit <- readRDS("fit_gpdm.rds")
 cat("Modelo cargado desde fit_gpdm.rds\n")
 ```
 
----
+------------------------------------------------------------------------
 
 ## 3. Parámetros estimados
 
@@ -122,7 +97,6 @@ print(fit, pars = c("lambda", "c"), digits_summary = 3)
 ```
 
 ```{r tabla-lambda}
-# Tabla limpia para el LaTeX
 s <- summary(fit)$summary
 
 lambda_tabla <- data.frame(
@@ -149,18 +123,19 @@ kable(c_tabla, caption = "Estimaciones a posteriori de los umbrales c_r")
 ### Convergencia (R̂)
 
 ```{r convergencia}
-rhat <- s[, "Rhat"]
+rhat     <- s[, "Rhat"]
 rhat_max <- max(rhat, na.rm = TRUE)
 n_malos  <- sum(rhat > 1.05, na.rm = TRUE)
 
-cat(sprintf("R̂ máximo:              %.4f\n", rhat_max))
-cat(sprintf("Parámetros con R̂>1.05: %d\n",   n_malos))
-cat(sprintf("Diagnóstico:           %s\n",
-            ifelse(rhat_max < 1.05, "✓ Convergencia satisfactoria",
-                   "✗ Revisar convergencia")))
+cat(sprintf("R máximo:              %.4f\n", rhat_max))
+cat(sprintf("Parametros con R>1.05: %d\n",   n_malos))
+cat(sprintf("Diagnostico:           %s\n",
+            ifelse(rhat_max < 1.05,
+                   "Convergencia satisfactoria",
+                   "Revisar convergencia")))
 ```
 
----
+------------------------------------------------------------------------
 
 ## 4. Clasificación de usuarios en perfiles
 
@@ -171,95 +146,73 @@ beta_hat   <- colMeans(post$beta)
 lambda_hat <- colMeans(post$lambda)
 c_hat      <- colMeans(post$c)
 
-# Función de probabilidad logística ordenada
 prob_ol <- function(eta, c_vec) {
-  m <- length(c_vec) + 1
-  p <- numeric(m)
+  m   <- length(c_vec) + 1
+  p   <- numeric(m)
   cum <- plogis(c_vec - eta)
   p[1] <- cum[1]
-  for (k in 2:(m-1)) p[k] <- cum[k] - cum[k-1]
-  p[m] <- 1 - cum[m-1]
+  for (k in 2:(m - 1)) p[k] <- cum[k] - cum[k - 1]
+  p[m] <- 1 - cum[m - 1]
   p
 }
 
-# Clasificación posterior de cada usuario
 I          <- length(users_idx)
 post_class <- matrix(NA, I, H)
 
 for (i in 1:I) {
-  datos_i  <- ratings_stan[ratings_stan$uid == i, ]
-  logpost  <- log(pi_hat)
+  datos_i <- ratings_stan[ratings_stan$uid == i, ]
+  logpost <- log(pi_hat)
   for (h in 1:H) {
     for (r in 1:nrow(datos_i)) {
       j   <- datos_i$mid[r]
       y   <- datos_i$rating[r]
-      eta <- beta_hat[j] + sum(Q_sub[j,] * lambda_hat * alpha_class[h,])
+      eta <- beta_hat[j] + sum(Q_sub[j, ] * lambda_hat * alpha_class[h, ])
       p   <- prob_ol(eta, c_hat)
       logpost[h] <- logpost[h] + log(max(p[y], 1e-300))
     }
   }
-  m <- max(logpost)
+  m    <- max(logpost)
   prob <- exp(logpost - m)
   post_class[i, ] <- prob / sum(prob)
 }
 
-clase_usuario  <- apply(post_class, 1, which.max)
-perfil_usuario <- alpha_class[clase_usuario, ]
+clase_usuario <- as.integer(apply(post_class, 1, function(fila) {
+  if (all(is.nan(fila)) || all(is.na(fila))) return(1L)
+  which.max(fila)
+}))
+
+perfil_usuario <- alpha_class[clase_usuario, , drop = FALSE]
 profile_mean   <- colMeans(perfil_usuario)
 ```
 
 ### Mapa de calor: probabilidades posteriores de clase
 
-```{r heatmap, fig.width=10, fig.height=6}
-heatmap_df <- as.data.frame(post_class)
-colnames(heatmap_df) <- paste0("C", seq_len(H))
-heatmap_df$usuario   <- seq_len(I)
-
-heatmap_long <- pivot_longer(heatmap_df, -usuario,
-                             names_to = "clase", values_to = "prob")
-
-p_heat <- ggplot(heatmap_long, aes(x = clase, y = usuario, fill = prob)) +
-  geom_tile() +
-  scale_fill_viridis_c(name = "Prob.\nposterior") +
-  labs(
-    title    = "Probabilidades posteriores de pertenencia a cada clase latente",
-    subtitle = "Cada fila es un usuario; cada columna, una de las 16 clases",
-    x = "Clase latente (1–16)", y = "Usuario (1–100)"
-  ) +
-  theme_minimal(base_size = 11) +
-  theme(
-    axis.text.x  = element_text(size = 7, angle = 45, hjust = 1),
-    plot.title   = element_text(face = "bold", hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, color = "grey40")
-  )
-
-p_heat
-ggsave("output/fig_heatmap_clases.png", p_heat, width = 10, height = 6, dpi = 150)
-```
-
 ### Perfil medio de preferencias
 
 ```{r perfil-medio, fig.width=6, fig.height=4}
-p_perfil <- data.frame(Género = names(profile_mean), Proporción = profile_mean) %>%
-  ggplot(aes(x = reorder(Género, Proporción), y = Proporción)) +
+p_perfil <- data.frame(
+  Genero     = names(profile_mean),
+  Proporcion = profile_mean
+) %>%
+  ggplot(aes(x = reorder(Genero, Proporcion), y = Proporcion)) +
   geom_col(fill = "#1A5276", color = "white", width = 0.6) +
-  geom_text(aes(label = paste0(round(Proporción * 100), "%")),
+  geom_text(aes(label = paste0(round(Proporcion * 100), "%")),
             hjust = -0.2, size = 4) +
   coord_flip() +
   scale_y_continuous(limits = c(0, 1), labels = percent) +
   labs(
-    title    = "Proporción de usuarios con preferencia por cada género",
+    title    = "Proporcion de usuarios con preferencia por cada genero",
     subtitle = "Muestra de 100 usuarios (modelo Stan)",
-    x = NULL, y = "Proporción"
+    x = NULL, y = "Proporcion"
   ) +
   theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold", hjust = 0.5),
+  theme(plot.title    = element_text(face = "bold", hjust = 0.5),
         plot.subtitle = element_text(hjust = 0.5, color = "grey40"))
 
 p_perfil
 ggsave("output/fig_perfil_medio.png", p_perfil, width = 6, height = 4, dpi = 150)
 
-cat("Proporción por género:\n")
+cat("Proporcion por genero:\n")
 print(round(profile_mean, 3))
 ```
 
@@ -268,134 +221,158 @@ kable(
   as.data.frame(perfil_usuario) %>%
     count(Drama, Comedy, Thriller, Romance, sort = TRUE) %>%
     slice_head(n = 5),
-  caption = "5 perfiles de preferencia más frecuentes entre los 100 usuarios"
+  caption = "5 perfiles de preferencia mas frecuentes entre los 100 usuarios"
 )
 ```
 
----
+------------------------------------------------------------------------
 
 ## 5. Comparación GPDM vs. CFG (replica Tabla 1 del artículo)
 
-### Predicciones del GPDM en test
+### 5.1 Predicciones del GPDM en test
 
 ```{r preds-gpdm}
-# Q matrix numérica con todos los movieId como rownames
+# Q matrix con movieId como rownames
 Q_num <- Q_matrix %>%
   dplyr::select(all_of(TOP4)) %>%
   as.matrix()
 rownames(Q_num) <- as.character(Q_matrix$movieId)
 
-# Todos los movieId en el modelo Stan (muestra de 100 usuarios)
 movies_model <- as.character(movies_idx)
 
-preds_gpdm <- ratings_test %>%
-  filter(movieId %in% as.integer(movies_model)) %>%
-  slice_sample(n = min(3000, n())) %>%    # muestra para no tardar demasiado
-  rowwise() %>%
-  mutate(
-    mid_stan = match(as.character(movieId), movies_model),
-    pred_wa  = {
-      if (is.na(mid_stan)) NA_real_ else {
-        p_tot <- rep(0, 5)
-        for (h in 1:H) {
-          eta   <- beta_hat[mid_stan] +
-            sum(Q_num[as.character(movieId), ] * lambda_hat * alpha_class[h,])
-          p_tot <- p_tot + pi_hat[h] * prob_ol(eta, c_hat)
-        }
-        sum(1:5 * p_tot)
-      }
-    },
-    pred_mp  = {
-      if (is.na(mid_stan)) NA_real_ else {
-        p_tot <- rep(0, 5)
-        for (h in 1:H) {
-          eta   <- beta_hat[mid_stan] +
-            sum(Q_num[as.character(movieId), ] * lambda_hat * alpha_class[h,])
-          p_tot <- p_tot + pi_hat[h] * prob_ol(eta, c_hat)
-        }
-        which.max(p_tot)
-      }
-    }
-  ) %>%
-  ungroup() %>%
-  drop_na()
+# Filtrar test a peliculas del modelo y tomar muestra
+test_gpdm <- ratings_test %>%
+  filter(movieId %in% as.integer(movies_model))
 
-mae_wa  <- mean(abs(preds_gpdm$rating - preds_gpdm$pred_wa))
-rmse_wa <- sqrt(mean((preds_gpdm$rating - preds_gpdm$pred_wa)^2))
-mae_mp  <- mean(abs(preds_gpdm$rating - preds_gpdm$pred_mp))
-rmse_mp <- sqrt(mean((preds_gpdm$rating - preds_gpdm$pred_mp)^2))
+set.seed(42)
+n_test    <- min(3000, nrow(test_gpdm))
+test_gpdm <- test_gpdm[sample(nrow(test_gpdm), n_test), ]
 
-cat(sprintf("GPDM Wei.Avg: MAE=%.3f  RMSE=%.3f\n", mae_wa, rmse_wa))
+cat(sprintf("Calculando predicciones GPDM sobre %d valoraciones de test...\n", nrow(test_gpdm)))
+
+pred_wa_vec <- numeric(nrow(test_gpdm))
+pred_mp_vec <- integer(nrow(test_gpdm))
+
+for (i in seq_len(nrow(test_gpdm))) {
+  mid_c    <- as.character(test_gpdm$movieId[i])
+  mid_stan <- match(mid_c, movies_model)
+
+  if (is.na(mid_stan) || !mid_c %in% rownames(Q_num)) {
+    pred_wa_vec[i] <- NA_real_
+    pred_mp_vec[i] <- NA_integer_
+    next
+  }
+
+  p_tot <- rep(0.0, 5)
+  for (h in 1:H) {
+    eta   <- beta_hat[mid_stan] +
+      sum(Q_num[mid_c, ] * lambda_hat * alpha_class[h, ])
+    p_h   <- prob_ol(eta, c_hat)
+    p_tot <- p_tot + pi_hat[h] * p_h
+  }
+
+  # Proteccion: cubre NA, NaN e Inf
+  if (!all(is.finite(p_tot)) || sum(p_tot) < 1e-10) {
+    pred_wa_vec[i] <- 3L
+    pred_mp_vec[i] <- 3L
+  } else {
+    pred_wa_vec[i] <- sum(1:5 * p_tot)
+    pred_mp_vec[i] <- which.max(p_tot)
+  }
+}
+
+test_gpdm$pred_wa <- pred_wa_vec
+test_gpdm$pred_mp <- pred_mp_vec
+test_gpdm <- test_gpdm[!is.na(test_gpdm$pred_wa), ]
+
+mae_wa  <- mean(abs(test_gpdm$rating - test_gpdm$pred_wa))
+rmse_wa <- sqrt(mean((test_gpdm$rating - test_gpdm$pred_wa)^2))
+mae_mp  <- mean(abs(test_gpdm$rating - test_gpdm$pred_mp))
+rmse_mp <- sqrt(mean((test_gpdm$rating - test_gpdm$pred_mp)^2))
+
+cat(sprintf("GPDM Wei.Avg:  MAE=%.3f  RMSE=%.3f\n", mae_wa, rmse_wa))
 cat(sprintf("GPDM Max.Prob: MAE=%.3f  RMSE=%.3f\n", mae_mp, rmse_mp))
 ```
 
-### Modelo de referencia: CFG (Content Filtering of Genres)
+### 5.2 Modelo de referencia: CFG (Content Filtering of Genres)
 
 ```{r cfg, cache=TRUE}
-# Similitud de Jaccard entre películas
 jaccard <- function(a, b) {
-  inter <- sum(a & b); union <- sum(a | b)
+  inter <- sum(a & b)
+  union <- sum(a | b)
   if (union == 0) return(0)
   inter / union
 }
 
-# Predicción CFG con k vecinos más similares
-predecir_cfg <- function(userId, movieId, ratings_df, Q_mat, k) {
-  vistas <- ratings_df %>% filter(userId == !!userId) %>%
-    dplyr::select(movieId, rating)
+predecir_cfg <- function(uid, mid, ratings_df, Q_mat, k) {
+  vistas <- ratings_df[ratings_df$userId == uid, ]
   if (nrow(vistas) == 0) return(NA_real_)
-  mid_c <- as.character(movieId)
+  mid_c <- as.character(mid)
   if (!mid_c %in% rownames(Q_mat)) return(NA_real_)
-  q_t <- Q_mat[mid_c, ]
-  sims <- sapply(as.character(vistas$movieId), function(m) {
+  q_t  <- Q_mat[mid_c, ]
+  mids <- as.character(vistas$movieId)
+  sims <- sapply(mids, function(m) {
     if (!m %in% rownames(Q_mat)) return(0)
     jaccard(q_t, Q_mat[m, ])
   })
-  idx <- order(sims, decreasing = TRUE)[1:min(k, length(sims))]
-  s   <- sims[idx]; r <- vistas$rating[idx]
+  ord <- order(sims, decreasing = TRUE)[1:min(k, length(sims))]
+  s   <- sims[ord]
+  r   <- vistas$rating[ord]
   ok  <- s > 0
-  if (!any(ok)) return(mean(ratings_train$rating))
+  if (!any(ok)) return(mean(ratings_df$rating))
   sum(s[ok] * r[ok]) / sum(s[ok])
 }
 
-# Evaluar CFG en una muestra de test (para no tardar demasiado)
 set.seed(1)
-test_muestra <- ratings_test %>%
-  filter(movieId %in% Q_matrix$movieId) %>%
-  slice_sample(n = 2000)
+test_cfg <- ratings_test %>%
+  filter(movieId %in% Q_matrix$movieId)
+test_cfg <- test_cfg[sample(nrow(test_cfg), min(2000, nrow(test_cfg))), ]
 
 resultados_cfg <- lapply(c(50, 100, 200), function(k_val) {
   cat(sprintf("CFG k=%d...\n", k_val))
-  preds <- test_muestra %>%
-    rowwise() %>%
-    mutate(pred = predecir_cfg(userId, movieId, ratings_train, Q_num, k_val)) %>%
-    ungroup() %>% drop_na()
+  preds <- numeric(nrow(test_cfg))
+  for (i in seq_len(nrow(test_cfg))) {
+    preds[i] <- predecir_cfg(
+      test_cfg$userId[i],
+      test_cfg$movieId[i],
+      ratings_train,
+      Q_num,
+      k_val
+    )
+  }
+  ok <- !is.na(preds)
   data.frame(
     k    = k_val,
-    MAE  = mean(abs(preds$rating - preds$pred)),
-    RMSE = sqrt(mean((preds$rating - preds$pred)^2))
+    MAE  = mean(abs(test_cfg$rating[ok] - preds[ok])),
+    RMSE = sqrt(mean((test_cfg$rating[ok] - preds[ok])^2))
   )
 }) %>% bind_rows()
 ```
 
-### Tabla comparativa (replica Tabla 1 del artículo)
+### 5.3 Tabla comparativa (Tabla 1 del articulo)
 
 ```{r tabla-comparativa}
 tabla_comp <- data.frame(
   Modelo = c("GPDM Wei.Avg", "GPDM Max.Prob",
              "CFG (k=50)", "CFG (k=100)", "CFG (k=200)"),
-  MAE  = round(c(mae_wa, mae_mp,
-                 resultados_cfg$MAE), 3),
-  RMSE = round(c(rmse_wa, rmse_mp,
-                 resultados_cfg$RMSE), 3)
+  MAE    = round(c(mae_wa, mae_mp, resultados_cfg$MAE),  3),
+  RMSE   = round(c(rmse_wa, rmse_mp, resultados_cfg$RMSE), 3)
 )
 
-kable(tabla_comp, caption = "Comparación MAE y RMSE: GPDM vs CFG (conjunto de test)")
+kable(tabla_comp,
+      caption = "Comparacion MAE y RMSE: GPDM vs CFG (conjunto de test)")
 
-cat("\n--- Referencia del artículo (DB1, 6978 usuarios train) ---\n")
-cat("GPDM Wei.Avg: MAE=0.662  RMSE=0.961\n")
-cat("GPDM Max.Prob: MAE=0.699  RMSE=0.887\n")
-cat("CFG (k=50):   MAE=0.806  RMSE=1.034\n")
-cat("CFG (k=200):  MAE=0.927  RMSE=1.173\n")
-cat("\nNota: diferencias respecto al artículo esperables (100 vs 6978 usuarios en Stan)\n")
+# Valores del articulo para comparar
+ref <- data.frame(
+  Modelo = c("GPDM Wei.Avg", "GPDM Max.Prob",
+             "CFG (k=50)", "CFG (k=100)", "CFG (k=200)"),
+  MAE    = c(0.662, 0.699, 0.806, 0.873, 0.927),
+  RMSE   = c(0.961, 0.887, 1.034, 1.111, 1.173)
+)
+
+kable(ref,
+      caption = "Referencia: valores del articulo (DB1, 6978 usuarios train, estimacion EM)")
+
+cat("\nNota: las diferencias son esperables.\n")
+cat("El modelo Stan se ajusto con 100 usuarios vs 6978 del articulo.\n")
 ```

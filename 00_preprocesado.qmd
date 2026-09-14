@@ -158,14 +158,19 @@ kable(comparacion, caption = "Comparación con el artículo de referencia (DB1)"
 ## 6. Guardar objetos intermedios
 
 ```{r guardar}
-write_csv(Q_matrix,     "output/Q_matrix.csv")
-write_csv(ratings_train, "output/ratings_train.csv")
-write_csv(ratings_val,   "output/ratings_val.csv")
-write_csv(ratings_test,  "output/ratings_test.csv")
+write_csv(Q_matrix,"output/Q_matrix.csv")
+write_csv(ratings_train,"output/ratings_train.csv")
+write_csv(ratings_val,"output/ratings_val.csv")
+write_csv(ratings_test,"output/ratings_test.csv")
 
 cat("Archivos guardados en output/\n")
 cat(sprintf("  Q_matrix:      %d filas\n", nrow(Q_matrix)))
 cat(sprintf("  ratings_train: %d filas\n", nrow(ratings_train)))
 cat(sprintf("  ratings_val:   %d filas\n", nrow(ratings_val)))
 cat(sprintf("  ratings_test:  %d filas\n", nrow(ratings_test)))
+```
+
+```{r}
+# necesario para 01 (solo ejecutar una vez) YA EJECUTADO
+#write_csv(ratings_ok, "output/ratings_ok.csv")
 ```
